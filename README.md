@@ -1,3 +1,2 @@
-# sensorjs-vcek
-The Sensor.js module for Volvo VCEK IoT sensor node
 # sensorjs-meltem
+The Sensor.js module for meltem ventilation system IoT sensor node
