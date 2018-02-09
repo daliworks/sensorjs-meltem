@@ -1,0 +1,20 @@
+{
+  "name": "sensorjs-meltem",
+  "version": "0.0.1",
+  "description": "The sensorjs plugin for meltem ventilation system IoT sensor node",
+  "main": "index.js",
+  "scripts": {
+  },
+  "author": "bohemian@daliworks.net",
+  "license": "MIT",
+  "dependencies": {
+    "lodash": "^2.4.2",
+    "serialport": "^4.0.7"
+  },
+  "devDependencies": {
+  },
+  "repository": {
+    "type": "git",
+    "url": "http://github.com/daliworks/sensorjs-meltem"
+  }
+}
