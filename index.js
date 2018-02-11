@@ -17,23 +17,23 @@ function initDrivers() {
 }
 
 function initNetworks() {
-  var rs232Vcek;
+  var network;
 
   try {
-    rs232Vcek = require('./network/rs232-meltem');
+    network = require('./network/meltem');
   } catch (e) {
-    logger.error('Cannot load ./network/rs232-meltem', e);
+    logger.error('Cannot load ./network/meltem', e);
   }
 
   return {
-    'rs232-meltem': rs232Vcek
+    'meltem': network
   };
 }
 
 module.exports = {
-  networks: ['rs232-meltem'],
+  networks: ['meltem-cvs'],
   drivers: {
-    meltemSensor: ['meltemTemperature', 'meltemHumidity', 'meltemNoise', 'meltemDust', 'meltemLight', 'meltemWeight']
+    meltemSensor: ['meltemCVSMode', 'meltemCVSRPM', 'meltemCVSCurrent', 'meltemCVSPressure']
   },
   initNetworks: initNetworks,
   initDrivers: initDrivers

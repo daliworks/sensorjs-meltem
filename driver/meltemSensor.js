@@ -16,52 +16,57 @@ function MeltemSensor(sensorInfo, options) {
   self.deviceAddress = self.id.split('-')[1];
   self.gatewayId = self.id.split('-')[0];
   self.lastTime = 0;
+  self.dataArray = [];
 
   if (sensorInfo.model) {
     self.model = sensorInfo.model;
   }
 
   self.dataType = MeltemSensor.properties.dataTypes[self.model][0];
+  self.isNotification = true;
 
-  meltem.on(self.sequence, function onData(data) {
-    var result = {
-      status: 'on',
-      id: self.id,
-      result: {},
-      time: {}
-    };
+  self.driver = meltem.get(self.deviceAddress);
+  if (self.driver == undefined)
+  {
+    self.driver = meltem.create(self.deviceAddress);
+  }
 
-    if (data.senderNodeId !== self.deviceAddress) {
-      logger.trace('Different device:', data.senderNodeId, self.deviceAddress);
-      return;
-    }
+  try {
+    self.driver.on(self.sequence, function onData(data) {
+      var result = {
+        status: 'on',
+        id: self.id,
+        result: {},
+        time: {}
+      };
 
-    result.result[self.dataType] = data.value;
-    result.time[self.dataType] = self.lastTime = new Date().getTime();
+      logger.trace('Data : ', data);
 
-    logger.debug('Data event:', self.id, result);
+      result.result[self.dataType] = self.lastValue = data.value;
+      result.time[self.dataType] = self.lastTime = new Date().getTime();
 
-    self.emit('data', result);
-  });
+      self.dataArray.push(result);
+     // self.emit('data', result);
+    });
+  }
+  catch(err)  {
+    logger.debug('[Meltem CVS] Exception occurred :', error);
+  }
 }
 
 MeltemSensor.properties = {
-  supportedNetworks: ['rs232-meltem'],
+  supportedNetworks: ['meltem-cvs'],
   dataTypes: {
-    meltemTemperature: ['temperature'],
-    meltemHumidity: ['humidity'],
-    meltemNoise: ['noise'],
-    meltemDust: ['dust'],
-    meltemLight: ['light'],
-    meltemWeight: ['weight']
+    meltemCVSMode: ['string'],
+    meltemCVSRPM: ['speed'],
+    meltemCVSCurrent: ['current'],
+    meltemCVSPressure: ['pressure']
   },
   models: [
-    'meltemTemperature',
-    'meltemHumidity',
-    'meltemNoise',
-    'meltemDust',
-    'meltemLight',
-    'meltemWeight'
+    'meltemCVSMode',
+    'meltemCVSRPM',
+    'meltemCVSCurrent',
+    'meltemCVSPressure'
   ],
   discoverable: false,
   addressable: true,
@@ -79,7 +84,7 @@ MeltemSensor.prototype._get = function (cb) {
   var result = {
     status: 'on',
     id: self.id,
-    //result: {},
+    result: {},
     time: {}
   };
 
@@ -94,7 +99,16 @@ MeltemSensor.prototype._get = function (cb) {
     }
   }
 
-  result.time[self.dataType] = self.lastTime;
+  if (self.dataArray.length != 0)
+  {
+    result.result[self.dataType] = self.lastValue;
+    result.time[self.dataType] = self.lastTime;
+    self.dataArray = [];
+  }
+  else
+  {
+    result.time[self.dataType] = self.lastTime;
+  }
 
   logger.debug('Data get:', self.id, result);
 
