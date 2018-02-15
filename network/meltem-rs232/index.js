@@ -6,7 +6,7 @@ var sensorDriver = require('../../index'),
 
 // 1. Rename the network name 'MeltemNetwork'
 function MeltemNetwork(options) {
-  Network.call(this, 'meltem-cvs', options);
+  Network.call(this, 'meltem-cvs-rs232', options);
 }
 
 util.inherits(MeltemNetwork, Network);

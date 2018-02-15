@@ -4,6 +4,7 @@ var logger = require('log4js').getLogger('Sensor');
 
 function initDrivers() {
   var meltemSensor;
+  var meltemActuator;
 
   try {
     meltemSensor = require('./driver/meltemSensor');
@@ -11,8 +12,15 @@ function initDrivers() {
     logger.error('Cannot load ./driver/meltemSensor', e);
   }
 
+  try {
+    meltemActuator = require('./driver/meltemActuator');
+  } catch(e) {
+    logger.error('Cannot load ./driver/meltemActuator', e);
+  }
+
   return {
-    meltemSensor: meltemSensor
+    meltemCVSSensor: meltemSensor,
+    meltemCVSActuator: meltemActuator
   };
 }
 
@@ -20,9 +28,9 @@ function initNetworks() {
   var network;
 
   try {
-    network = require('./network/meltem');
+    network = require('./network/meltem-tcp');
   } catch (e) {
-    logger.error('Cannot load ./network/meltem', e);
+    logger.error('Cannot load ./network/meltem-tcp', e);
   }
 
   return {
@@ -31,9 +39,10 @@ function initNetworks() {
 }
 
 module.exports = {
-  networks: ['meltem-cvs'],
+  networks: ['meltem-cvs-tcp'],
   drivers: {
-    meltemSensor: ['meltemCVSMode', 'meltemCVSRPM', 'meltemCVSCurrent', 'meltemCVSPressure']
+    meltemCVSSensor: ['meltemCVSMode', 'meltemCVSRPM', 'meltemCVSCurrent', 'meltemCVSPressure', 'meltemCVSPower', 'meltemCVSTemperature'],
+    meltemCVSActuator: ['meltemCVSSettings']
   },
   initNetworks: initNetworks,
   initDrivers: initDrivers

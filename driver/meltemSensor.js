@@ -25,14 +25,12 @@ function MeltemSensor(sensorInfo, options) {
   self.dataType = MeltemSensor.properties.dataTypes[self.model][0];
   self.isNotification = true;
 
-  self.driver = meltem.get(self.deviceAddress);
-  if (self.driver == undefined)
-  {
-    self.driver = meltem.create(self.deviceAddress);
-  }
+  self.master = meltem.create(9000);
 
   try {
-    self.driver.on(self.sequence, function onData(data) {
+    self.master.addDevice(self.deviceAddress);
+
+    self.master.on(self.deviceAddress + '-' + self.sequence, function onData(data) {
       var result = {
         status: 'on',
         id: self.id,
@@ -45,12 +43,16 @@ function MeltemSensor(sensorInfo, options) {
       result.result[self.dataType] = self.lastValue = data.value;
       result.time[self.dataType] = self.lastTime = new Date().getTime();
 
-      self.dataArray.push(result);
-     // self.emit('data', result);
+      if (self.isNotification) {
+        self.emit('data', result);
+      }
+      else{
+        self.dataArray.push(result);
+      }
     });
   }
   catch(err)  {
-    logger.debug('[Meltem CVS] Exception occurred :', error);
+    logger.debug('[Meltem CVS] Exception occurred :', err);
   }
 }
 
@@ -60,13 +62,17 @@ MeltemSensor.properties = {
     meltemCVSMode: ['string'],
     meltemCVSRPM: ['speed'],
     meltemCVSCurrent: ['current'],
-    meltemCVSPressure: ['pressure']
+    meltemCVSPressure: ['pressure'],
+    meltemCVSPower: ['power'],
+    meltemCVSTemperature: ['temperature']
   },
   models: [
     'meltemCVSMode',
     'meltemCVSRPM',
     'meltemCVSCurrent',
-    'meltemCVSPressure'
+    'meltemCVSPressure',
+    'meltemCVSPower',
+    'meltemCVSTemperature'
   ],
   discoverable: false,
   addressable: true,
@@ -88,26 +94,31 @@ MeltemSensor.prototype._get = function (cb) {
     time: {}
   };
 
-  if (new Date().getTime() - self.lastTime > self.properties.recommendedInterval * 1.5) {
-    result.status = 'error';
-    result.message = 'No data';
-    if (cb) {
-      return cb(new Error('no data'), result);
-    } else {
-      self.emit('data', result);
-      return;
-    }
-  }
-
-  if (self.dataArray.length != 0)
+  if (self.isNotification && self.master)
   {
-    result.result[self.dataType] = self.lastValue;
-    result.time[self.dataType] = self.lastTime;
-    self.dataArray = [];
+    //self.master.sendMessage(self.id.split('-')[1], 'D00');
   }
   else
   {
-    result.time[self.dataType] = self.lastTime;
+    if (new Date().getTime() - self.lastTime > self.properties.recommendedInterval * 1.5) {
+      result.status = 'error';
+      result.message = 'No data';
+      if (cb) {
+        return cb(new Error('no data'), result);
+      } else {
+        self.emit('data', result);
+        return;
+      }
+    }
+
+    if (self.dataArray.length != 0) {
+      result.result[self.dataType] = self.lastValue;
+      result.time[self.dataType] = self.lastTime;
+      self.dataArray = [];
+    }
+    else {
+      result.time[self.dataType] = self.lastTime;
+    }
   }
 
   logger.debug('Data get:', self.id, result);
