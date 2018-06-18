@@ -1,10 +1,9 @@
 'use strict';
 
+var _ = require('lodash');
 var util = require('util');
-
 var SensorLib = require('../index');
 var Actuator = SensorLib.Actuator;
-var _ = require('lodash');
 var logger = Actuator.getLogger();
 var meltem = require('../meltem');
 
@@ -24,13 +23,13 @@ function MeltemActuator(sensorInfo, options) {
 
   self.dataType = MeltemActuator.properties.dataTypes[self.model][0];
   
-  self.master = meltem.create(9000);
+  self.master = meltem.create();
 
   try {
     var device;
 
     device = self.master.addDevice(self.deviceAddress);
-    if (device == undefined ) {
+    if (!device) {
       throw 'Cant create device : ' + self.deviceAddress;
     }
 
@@ -88,7 +87,7 @@ MeltemActuator.prototype._set = function (cmd, options, cb) {
   var self = this;
 
   try{
-    if (options.settings != undefined) {
+    if (options.settings) {
       var settings = JSON.parse(options.settings);
       self.master.emit(self.deviceAddress + '-' + self.sequence, settings);
     }
@@ -96,8 +95,7 @@ MeltemActuator.prototype._set = function (cmd, options, cb) {
   catch(err) {
     return cb && cb(err);
   }
-
-}
+};
 
 MeltemActuator.prototype._get = function (cmd, options, cb) {
   var self = this;

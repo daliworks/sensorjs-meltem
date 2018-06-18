@@ -3,192 +3,198 @@
 var util = require('util');
 var SerialPort = require('serialport');
 var net = require('net');
-var _ = require('lodash');
 var EventEmitter = require('events').EventEmitter;
 var Device = require('./meltemDevice');
-var masters = [];
-
 var logger = require('./index').Sensor.getLogger('Sensor');
+
+var MELTEM_CVS_MASTER_ID = '999';
+var LOOP_INTERVAL_MIN = 60000;
+var REQUEST_INTERVAL_MIN = 1000;
+var RESPONSE_WAITING_TIME = 5000;
 
 var serialOpts = {
   baudRate: 115200,
   parity: 'none',
-  parser: SerialPort.parsers.readline('0D0A')
+  parser: SerialPort.parsers.readline('\r\n'),
+  autoOpen: false
 };
 
-var SERIAL_PORT_FILE = '/dev/ttyS0';
-var RETRY_OPEN_INTERVAL = 3000; // 3sec
+var START_OF_FRAME = '(';
+var END_OF_FRAME = ')';
+//var SERIAL_PORT = '/dev/ttyS0';
+var NET_PORT  = 9000;
+var masters = [];
 
-function openSerialPort(cvs, errorCb) {
-  var self;
+// TODO: If opening port takes long time, async function cannot be finished.
+function MeltemCVSMaster (port) {
+  var self = this;
 
-  if (_.isFunction(cvs)) {
-    self = module.exports;
-    errorCb = cvs;
-  } else {
-    self = cvs;
+  self.id = MELTEM_CVS_MASTER_ID;
+  self.serialPorts = [];
+  self.listeners = [];
+  self.devices = [];
+  self.requestPool = [];
+  self.loopIntervalMin = LOOP_INTERVAL_MIN;
+  self.requestIntervalMin = REQUEST_INTERVAL_MIN;
+  self.responseWaitingTime = RESPONSE_WAITING_TIME;
+  self.requestDate = 0;
+
+  EventEmitter.call(self);
+
+  logger.trace('[Meltem CVS] port : ', port);
+  if (_.isInteger(port)) {
+    self.startNetServer(port);
+  }
+  else {
+    self.startSerialServer(port);
   }
 
-  self.port = new SerialPort(SERIAL_PORT_FILE, serialOpts, function onOpen(err) {
-    logger.info('[Meltem CVS] Connected');
+  self.on('update', function() {
+    var request = self.requestPool.shift();
+    if (request) {
+      request.device.emit(request.cmd, request);
+    }
+  });
+}
+
+util.inherits(MeltemCVSMaster, EventEmitter);
+
+MeltemCVSMaster.prototype.startNetServer = function(port) {
+  var self = this;
+
+  self.server = net.createServer(function (listener) {
+    logger.trace('[Meltem CVS] Client connected.');
+    self.listeners.push(listener);
+
+    listener.index  = 0;
+    listener.parent = self;
+    listener.startDate = new Date();
+    listener.timeout   = listener.startDate.getTime();
+    listener.loopInterval = listener.parent.loopIntervalMin;
+
+    listener.on('data', function (data) {
+      self.onData(data);
+    });
+
+    listener.on('end', function () {
+      self = this;
+
+      clearInterval(listener.nextUpdateTimeout);
+      var i;
+      for (i = 0; i < self.parent.listeners.length; i++) {
+        if (self.parent.listeners[i] === listener) {
+          self.parent.listeners.splice(i, 1);
+          break;
+        }
+      }
+      logger.trace('FIN received');
+    });
+
+    listener.on('close', function () {
+      clearInterval(listener.nextUpdateTimeout);
+      var i;
+      for (i = 0; i < self.parent.listeners.length; i++) {
+        if (self.parent.listeners[i] === listener) {
+          self.parent.listeners.splice(i, 1);
+          break;
+        }
+      }
+      logger.trace('Socket closed');
+    });
+
+    listener.on('update', function(){
+      if (self.requestPool.length) {
+        self.updateStartTime = new Date();
+
+        _.each(self.parent.devices, function(device) {
+          self.requestPool.push( { device: device, cmd: 'update'} );
+        });
+
+        self.emit('update');
+      }
+    });
+  });
+
+  self.server.listen(port, function () {
+    logger.trace('[Meltem CVS] Server listening for connection');
+  });
+};
+
+MeltemCVSMaster.prototype.openSerialServer = function(name) {
+  var self = this;
+
+  self.server = new SerialPort(name, serialOpts);
+  self.server.open(function(err) {
+    logger.trace('[Meltem CVS] Connected');
 
     if (err) {
       logger.error('Serial port error during opening:', err);
-
-      return errorCb && errorCb(err);     // Call error callback only when error during opening
+      return;
     } else {
-      logger.info('[Meltem CVS] No err, Connected');
+      logger.trace('[Meltem CVS] No err, Connected');
     }
 
-    self.port.on('error', function onError(err) {
+    self.server.on('error', function onError(err) {
       logger.error('Serial port error:', err);
-
       return;
     });
 
-    self.port.on('close', function onClose(err) {
+    self.server.on('close', function onClose(err) {
       if (err) {
         logger.error('Serial port error during closing:', err);
         // TODO: if error, isn't this closed?
       } else {
-        logger.info('Serial port is closed');
+        logger.trace('Serial port is closed');
       }
 
       return;
     });
 
-    self.port.on('disconnect', function onDisconnect(err) {
+    self.server.on('disconnect', function onDisconnect(err) {
       logger.error('Serial port is disconnected:', err);
 
       return;
     });
 
-    self.port.on('data', function onData(data) {
-      var parsedData;
-
-      logger.trace('[Meltem CVS] onData():', new Buffer(data).toString());
-
-      parsedData = parseMessage(data);
-
-      if (parsedData instanceof Error) {
-        logger.error(parsedData);
-        return;
-      }
-
-      self.emit(parsedData.sensorType, parsedData);
+    self.server.on('data', function onData(data) {
+      self.onData(data);
     });
   });
-}
-
-function openSerialErrorCallback(/*err*/) {
-  setTimeout(function () {
-    openSerialPort(openSerialErrorCallback);
-  }, RETRY_OPEN_INTERVAL);
-}
-// TODO: If opening port takes long time, async function cannot be finished.
-function MeltemCVSMaster (port) {
-  var self = this;
-
-  self.port = port;
-  self.id = '999';
-  self.clients = [];
-  self.devices = [];
-  self.minimumInterval = 60000;
-  self.minimumRequestInterval = 1000;
-  self.responseWaitingTime = 5000;
-  self.requestDate = 0;
-
-  EventEmitter.call(self);
-
-  logger.info('[Meltem CVS] port : ', self.port);
-  self.open(openNetErrorCallback);
-}
-
-util.inherits(MeltemCVSMaster, EventEmitter);
-
-MeltemCVSMaster.prototype.open = function(errorCb) {
-  var self = this;
-
-  self.server = net.createServer(function (client) {
-    var master;
-
-    master = self;
-
-    logger.info('[Meltem CVS] Client connected.');
-
-    master.clients.push(client);
-
-    client.index = 0;
-    client.parent = master;
-    client.startDate = new Date();
-    client.timeout   = client.startDate.getTime();
-    client.loopInterval = client.parent.minimumInterval;
-
-    client.on('data', function (data) {
-      self = this;
-      
-      self.parent.devices.map(function(device){
-        device.emit('data', data);
-      });
-    });
-
-    client.on('end', function () {
-      self = this;
-
-      clearInterval(client.nextUpdateTimeout);
-      var i;
-      for (i = 0; i < self.parent.clients.length; i++) {
-        if (self.parent.clients[i] == client) {
-          self.parent.clients.splice(i, 1);
-          break;
-        }
-      }
-      logger.info('[Meltem CVS] Client disconnected');
-    });
-
-    client.on('update', function(){
-        self = this;
-        var totalTime = 0;
-
-        self.updateStartTime = new Date;
-
-        self.parent.devices.map(function(device) {
-          var occupationTime;
-          // Device occupancy time.
-          occupationTime = device.getOccupationTime(self.parent.responseWaitingTime);
-          device.emit('update', totalTime, occupationTime - 10);
-          // The start time of the next device.
-          totalTime += occupationTime;
-        });
-
-        if (totalTime < self.parent.minimumInterval) {
-          totalTime = self.parent.minimumInterval;
-        }
-
-        self.loopInterval = totalTime;
-
-        self.parent.nextUpdateTimeout = setTimeout(function(){
-          self.emit('update');
-        }, self.loopInterval);
-    });
-
-    client.emit('update');
-  });
-
-  self.server.listen(self.port, function () {
-    logger.info('[Meltem CVS] Server listening for connection');
-  });
-}
-
-function openNetErrorCallback(/*err*/) {
-  setTimeout(function () {
-    //openNetPort(openNetErrorCallback);
-  }, RETRY_OPEN_INTERVAL);
-}
+};
 
 MeltemCVSMaster.prototype.close = function () {
-  logger.info('Closing port');
-  this.port.close();
+  var self = this;
+  logger.trace('Closing port');
+
+  if (self.server) {
+    self.server.close();
+    self.server = undefined;
+  }
+};
+
+MeltemCVSMaster.prototype.onData = function (data) {
+  var self = this;
+  var payload = new Buffer(data).toString();
+
+  if ((payload.length < 11) || (payload.substr(0, 1) !== START_OF_FRAME) || (payload.substr(payload.length - 1, 1) !== END_OF_FRAME)) {
+    logger.error('Invalid data', payload);
+    return;
+  }
+
+  var masterId = parseInt(payload.substr(1, 3));
+ 
+  if (masterId !== self.id) {
+    logger.error('Invalid Master ID : ', payload);
+    return;
+  }
+
+  var slaveId = parseInt(payload.substr(4, 3));
+
+  self.parent.devices.map(function (device) {
+    if (device.id === slaveId) {
+      device.emit(payload.substr(7, 3), payload);
+    }
+  });
 };
 
 MeltemCVSMaster.prototype.addDevice = function(id) {
@@ -197,69 +203,71 @@ MeltemCVSMaster.prototype.addDevice = function(id) {
   var device = {};
 
   for(i = 0 ; i < self.devices.length ; i++) {
-    if (self.devices[i].id == id) {
+    if (self.devices[i].id === id) {
       return self.devices[i];
     }
   }
 
   device = Device.create(self, id);
-  
-  logger.trace('Add Device : ', device);
   self.devices.push(device);
 
   return  device;
-}
+};
 
 MeltemCVSMaster.prototype.getDevice = function(id) {
   var self = this;
   var i;
 
   for(i = 0 ; i < self.devices.length ; i++) {
-    if (self.devices[i].id == id) {
+    if (self.devices[i].id === id) {
       return self.devices[i];
     }
   }
 
   return undefined;
-}
+};
 
 MeltemCVSMaster.prototype.sendMessage = function (id, message) {
   var   self = this;
   var   i;
-  var   date = new Date;
+  var   date = new Date();
   var   timeGap = date.getTime() - self.requestDate;
 
-  if (timeGap >= self.minimumRequestInterval) {
-      timeGap = 0;
+  if (timeGap >= self.requestIntervalMin) {
+      timeGap = self.requestIntervalMin;
   }
 
   setTimeout(function () {
-    for (i = 0; i < self.clients.length; i++) {
+    self.requestDate = date;
+    for (i = 0; i < self.listeners.length; i++) {
       logger.trace('Send Message : <' + id + self.id + message + '>');
-      self.clients[i].write('<' + id + self.id + message + '>\r\n');
+      self.listeners[i].write('<' + id + self.id + message + '>\r\n');
     }
-  }, self.minimumRequestInterval - timeGap);
-}
+  }, self.requestIntervalMin - timeGap);
+};
 
 function CreateMaster(port) {
   var i;
-  var basePort = parseInt(port) / 100 * 100;
+
+  if (!port) {
+    port = NET_PORT;
+  }
 
   for(i = 0 ; i < masters.length ; i++)
   {
-      if (masters[i].port == basePort)
+      if (masters[i].port === port)
       {
           return  masters[i];
       }
   }
 
-  logger.info('[Meltem CVS] Create new instance : ', basePort);
+  logger.trace('[Meltem CVS] Create new instance : ', port);
 
-  var newMaster = new MeltemCVSMaster(basePort);
+  var master = new MeltemCVSMaster(port);
 
-  masters.push(newMaster);
+  masters.push(master);
 
-  return  newMaster;
+  return  master;
 }
 
 function DestroyMaster(port) {
@@ -270,7 +278,7 @@ function DestroyMaster(port) {
 
   for(i = 0 ; i < masters.length ; i++)
   {
-      if (masters[i].port == basePort)
+      if (masters[i].port === basePort)
       {
           masters.splice(i, 1);
           return ;
@@ -286,7 +294,7 @@ function  GetMaster(port) {
 
   for(i = 0 ; i < masters.length ; i++)
   {
-      if (masters[i].port == basePort)
+      if (masters[i].port === basePort)
       {
           return  masters[i];
       }

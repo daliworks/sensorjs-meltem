@@ -1,7 +1,6 @@
 'use strict';
 
 var util = require('util');
-
 var SensorLib = require('../index');
 var Sensor = SensorLib.Sensor;
 var logger = Sensor.getLogger('Sensor');
@@ -25,7 +24,7 @@ function MeltemSensor(sensorInfo, options) {
   self.dataType = MeltemSensor.properties.dataTypes[self.model][0];
   self.isNotification = true;
 
-  self.master = meltem.create(9000);
+  self.master = meltem.create();
 
   try {
     self.master.addDevice(self.deviceAddress);
@@ -59,11 +58,10 @@ function MeltemSensor(sensorInfo, options) {
 MeltemSensor.properties = {
   supportedNetworks: ['meltem-cvs'],
   dataTypes: {
-    meltemCVSMode: ['string'],
-    meltemCVSRPM: ['speed'],
+    meltemCVSMode: ['state'],
+    meltemCVSRPM: ['rpm'],
     meltemCVSCurrent: ['current'],
     meltemCVSPressure: ['pressure'],
-    meltemCVSPower: ['power'],
     meltemCVSTemperature: ['temperature']
   },
   models: [
@@ -71,7 +69,6 @@ MeltemSensor.properties = {
     'meltemCVSRPM',
     'meltemCVSCurrent',
     'meltemCVSPressure',
-    'meltemCVSPower',
     'meltemCVSTemperature'
   ],
   discoverable: false,
@@ -94,11 +91,11 @@ MeltemSensor.prototype._get = function (cb) {
     time: {}
   };
 
-  if (self.isNotification && self.master)
-  {
+  //if (self.isNotification && self.master)
+  //{
     //self.master.sendMessage(self.id.split('-')[1], 'D00');
-  }
-  else
+  //}
+  //else
   {
     if (new Date().getTime() - self.lastTime > self.properties.recommendedInterval * 1.5) {
       result.status = 'error';
@@ -111,7 +108,7 @@ MeltemSensor.prototype._get = function (cb) {
       }
     }
 
-    if (self.dataArray.length != 0) {
+    if (self.dataArray.length) {
       result.result[self.dataType] = self.lastValue;
       result.time[self.dataType] = self.lastTime;
       self.dataArray = [];
