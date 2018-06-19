@@ -7,7 +7,7 @@ var Actuator = SensorLib.Actuator;
 var logger = Actuator.getLogger();
 var meltem = require('../meltem');
 
-function MeltemActuator(sensorInfo, options) {
+function MeltemCVSActuator(sensorInfo, options) {
   var self = this;
 
   Actuator.call(self, sensorInfo, options);
@@ -21,7 +21,7 @@ function MeltemActuator(sensorInfo, options) {
     self.model = sensorInfo.model;
   }
 
-  self.dataType = MeltemActuator.properties.dataTypes[self.model][0];
+  self.dataType = MeltemCVSActuator.properties.dataTypes[self.model][0];
   
   self.master = meltem.create();
 
@@ -42,7 +42,7 @@ function MeltemActuator(sensorInfo, options) {
   }
 }
 
-MeltemActuator.properties = {
+MeltemCVSActuator.properties = {
   supportedNetworks: ['meltem-cvs-tcp'],
   dataTypes: {
     meltemCVSSettings: ['string']
@@ -62,7 +62,7 @@ MeltemActuator.properties = {
   category: 'actuator'
 };
 
-util.inherits(MeltemActuator, Actuator);
+util.inherits(MeltemCVSActuator, Actuator);
 
 function sendCommand(actuator, cmd, options, cb) {
   if (_.isFunction(options)) {
@@ -83,7 +83,7 @@ function sendCommand(actuator, cmd, options, cb) {
   }
 }
 
-MeltemActuator.prototype._set = function (cmd, options, cb) {
+MeltemCVSActuator.prototype._set = function (cmd, options, cb) {
   var self = this;
 
   try{
@@ -97,7 +97,7 @@ MeltemActuator.prototype._set = function (cmd, options, cb) {
   }
 };
 
-MeltemActuator.prototype._get = function (cmd, options, cb) {
+MeltemCVSActuator.prototype._get = function (cmd, options, cb) {
   var self = this;
   
   sendCommand(self.shortId, cmd, options, function (err, result) {
@@ -110,15 +110,15 @@ MeltemActuator.prototype._get = function (cmd, options, cb) {
   });
 };
 
-MeltemActuator.prototype.getStatus = function () {
+MeltemCVSActuator.prototype.getStatus = function () {
   return this.myStatus;
 };
 
-MeltemActuator.prototype.connectListener = function () {
+MeltemCVSActuator.prototype.connectListener = function () {
   this.myStatus = 'on';
 };
 
-MeltemActuator.prototype.disconnectListener = function () {
+MeltemCVSActuator.prototype.disconnectListener = function () {
   var rtn = {
     status: 'off',
     id: this.id,
@@ -129,4 +129,4 @@ MeltemActuator.prototype.disconnectListener = function () {
   this.emit('data', rtn);
 };
 
-module.exports = MeltemActuator;
+module.exports = MeltemCVSActuator;

@@ -6,7 +6,7 @@ var Sensor = SensorLib.Sensor;
 var logger = Sensor.getLogger('Sensor');
 var meltem = require('../meltem');
 
-function MeltemSensor(sensorInfo, options) {
+function meltemCVSSensor(sensorInfo, options) {
   var self = this;
 
   Sensor.call(self, sensorInfo, options);
@@ -21,7 +21,7 @@ function MeltemSensor(sensorInfo, options) {
     self.model = sensorInfo.model;
   }
 
-  self.dataType = MeltemSensor.properties.dataTypes[self.model][0];
+  self.dataType = meltemCVSSensor.properties.dataTypes[self.model][0];
   self.isNotification = true;
 
   self.master = meltem.create();
@@ -55,7 +55,7 @@ function MeltemSensor(sensorInfo, options) {
   }
 }
 
-MeltemSensor.properties = {
+meltemCVSSensor.properties = {
   supportedNetworks: ['meltem-cvs'],
   dataTypes: {
     meltemCVSMode: ['state'],
@@ -82,7 +82,7 @@ MeltemSensor.properties = {
 
 util.inherits(MeltemSensor, Sensor);
 
-MeltemSensor.prototype._get = function (cb) {
+meltemCVSSensor.prototype._get = function (cb) {
   var self = this;
   var result = {
     status: 'on',
@@ -127,10 +127,10 @@ MeltemSensor.prototype._get = function (cb) {
   }
 };
 
-MeltemSensor.prototype._enableChange = function () {
+meltemCVSSensor.prototype._enableChange = function () {
 };
 
-MeltemSensor.prototype._clear = function () {
+meltemCVSSensor.prototype._clear = function () {
 };
 
-module.exports = MeltemSensor;
+module.exports = meltemCVSSensor;

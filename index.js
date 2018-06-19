@@ -3,24 +3,24 @@
 var logger = require('log4js').getLogger('Sensor');
 
 function initDrivers() {
-  var meltemSensor;
-  var meltemActuator;
+  var meltemCVSSensor;
+  var meltemCVSActuator;
 
   try {
-    meltemSensor = require('./driver/meltemSensor');
+    meltemCVSSensor = require('./driver/meltemCVSSensor');
   } catch(e) {
-    logger.error('Cannot load ./driver/meltemSensor', e);
+    logger.error('Cannot load ./driver/meltemCVSSensor', e);
   }
 
   try {
-    meltemActuator = require('./driver/meltemActuator');
+    meltemCVSActuator = require('./driver/meltemCVSActuator');
   } catch(e) {
-    logger.error('Cannot load ./driver/meltemActuator', e);
+    logger.error('Cannot load ./driver/meltemCVSActuator', e);
   }
 
   return {
-    meltemCVSSensor: meltemSensor,
-    meltemCVSActuator: meltemActuator
+    meltemCVSSensor: meltemCVSSensor,
+    meltemCVSActuator: meltemCVSActuator
   };
 }
 
