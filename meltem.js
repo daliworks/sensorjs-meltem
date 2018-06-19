@@ -1,6 +1,7 @@
 'use strict';
 
 var util = require('util');
+var _ = require('lodash');
 var SerialPort = require('serialport');
 var net = require('net');
 var EventEmitter = require('events').EventEmitter;
@@ -38,11 +39,12 @@ function MeltemCVSMaster (port) {
   self.requestIntervalMin = REQUEST_INTERVAL_MIN;
   self.responseWaitingTime = RESPONSE_WAITING_TIME;
   self.requestDate = 0;
+  self.port = port;
 
   EventEmitter.call(self);
 
   logger.trace('[Meltem CVS] port : ', port);
-  if (_.isInteger(port)) {
+  if (_.isNumber(port)) {
     self.startNetServer(port);
   }
   else {
