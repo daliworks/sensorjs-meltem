@@ -29,6 +29,7 @@ function MeltemCVSSensor(sensorInfo, options) {
   try {
     self.master.addDevice(self.deviceAddress);
 
+    logger.trace('Add Message : ', self.deviceAddress + '-' + self.sequence);
     self.master.on(self.deviceAddress + '-' + self.sequence, function onData(data) {
       var result = {
         status: 'on',
@@ -61,14 +62,18 @@ MeltemCVSSensor.properties = {
     meltemCVSMode: ['state'],
     meltemCVSRPM: ['rpm'],
     meltemCVSCurrent: ['current'],
+    meltemCVSPower: ['power'],
     meltemCVSPressure: ['pressure'],
-    meltemCVSTemperature: ['temperature']
+    meltemCVSTemperature: ['temperature'],
+    meltemCVSOperatingTime: ['number']
   },
   models: [
     'meltemCVSMode',
     'meltemCVSRPM',
     'meltemCVSCurrent',
+    'meltemCVSPower',
     'meltemCVSPressure',
+    'meltemCVSOperatingTime',
     'meltemCVSTemperature'
   ],
   discoverable: false,

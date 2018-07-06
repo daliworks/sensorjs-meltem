@@ -1,6 +1,5 @@
 'use strict';
 
-var _ = require('lodash');
 var util = require('util');
 var SensorLib = require('../index');
 var Actuator = SensorLib.Actuator;
@@ -26,16 +25,10 @@ function MeltemCVSActuator(sensorInfo, options) {
   self.master = meltem.create();
 
   try {
-    var device;
-
-    device = self.master.addDevice(self.deviceAddress);
-    if (!device) {
+    self.device = self.master.addDevice(self.deviceAddress);
+    if (!self.device) {
       throw 'Cant create device : ' + self.deviceAddress;
     }
-
-    self.master.on(self.deviceAddress + '-' + self.sequence, function onData(settings) {
-      device.emit('settings', settings);
-    });
   }
   catch(err)  {
     logger.debug('[Meltem CVS] Exception occurred :', err);
@@ -45,13 +38,13 @@ function MeltemCVSActuator(sensorInfo, options) {
 MeltemCVSActuator.properties = {
   supportedNetworks: ['meltem-cvs-tcp'],
   dataTypes: {
-    meltemCVSSettings: ['string']
+    meltemCVSSettings: ['stringActuator']
   },
   models: [
     'meltemCVSSettings'
   ],
   commands: {
-    meltemCVSSettings: [ 'set', 'get' ]
+    meltemCVSSettings: [ 'send' ]
   },
   discoverable: false,
   addressable: true,
@@ -64,50 +57,24 @@ MeltemCVSActuator.properties = {
 
 util.inherits(MeltemCVSActuator, Actuator);
 
-function sendCommand(actuator, cmd, options, cb) {
-  if (_.isFunction(options)) {
-    cb = options;
-    options = null;
-  }
-
-  logger.trace('sendCommand : ', actuator.deviceAddress, actuator.sequence, cmd, options);
- 
-  try {
-    var settings = JSON.parse(options.settings);
-    logger.trace('Settings : ', settings);
-
-    cb(undefined, 'Success!');
-  }
-  catch(err) {
-    cb('Invalid JSON format', err);
-  }
-}
-
 MeltemCVSActuator.prototype._set = function (cmd, options, cb) {
   var self = this;
 
   try{
-    if (options.settings) {
-      var settings = JSON.parse(options.settings);
-      self.master.emit(self.deviceAddress + '-' + self.sequence, settings);
+    if (options.text) {
+      var settings = JSON.parse(options.text);
+
+      if (self.device) {
+        self.device.emit('control', settings, cb);
+      }
+      else {
+        return  cb('Not supported control!');
+      }
     }
   }
   catch(err) {
     return cb && cb(err);
   }
-};
-
-MeltemCVSActuator.prototype._get = function (cmd, options, cb) {
-  var self = this;
-  
-  sendCommand(self.shortId, cmd, options, function (err, result) {
-    if(err) {
-      self.myStatus = 'err';
-    } else {
-      self.myStatus = 'on';
-    }
-    return cb && cb(err, result);
-  });
 };
 
 MeltemCVSActuator.prototype.getStatus = function () {

@@ -41,7 +41,7 @@ function initNetworks() {
 module.exports = {
   networks: ['meltem-cvs-tcp'],
   drivers: {
-    meltemCVSSensor: ['meltemCVSMode', 'meltemCVSRPM', 'meltemCVSCurrent', 'meltemCVSPressure', 'meltemCVSPower', 'meltemCVSTemperature'],
+    meltemCVSSensor: ['meltemCVSMode', 'meltemCVSRPM', 'meltemCVSCurrent', 'meltemCVSPressure', 'meltemCVSPower', 'meltemCVSTemperature', 'meltemCVSOperatingTime'],
     meltemCVSActuator: ['meltemCVSSettings']
   },
   initNetworks: initNetworks,
