@@ -17,16 +17,6 @@ var STEP_TABLE = [
   { 'name' : 'F1', 'step' : 7}
 ];
 
-var SETTINGS1_NAME = [ 's01', 's02', 's03', 's04', 's05', 's06', 's07', 's08', 's09', 's10', 's11', 's12' ]; 
-var SETTINGS2_NAME = [ 's13', 's14', 's15', 's16', 's17', 's18', 's19', 's20', 's21', 's22', 's23', 's24' ]; 
-var SETTINGS3_NAME = [ 'set1Rpm', 'set1Current', 'set2Rpm', 'set2Current', 'set3Rpm', 'set3Current', 'set3OpenRpm', 'set3OpenCurrent'];
-
-var SETTINGS_NAME = [
-  's01', 's02', 's03', 's04', 's05', 's06', 's07', 's08', 's09', 's10', 's11', 's12' , 
-  's13', 's14', 's15', 's16', 's17', 's18', 's19', 's20', 's21', 's22', 's23', 's24', 
-  'set1Rpm', 'set1Current', 'set2Rpm', 'set2Current', 'set3Rpm', 'set3Current', 'set3OpenRpm', 'set3OpenCurrent'
-];
-
 var DEFAULT_SETTINGS = {
   s01: { value: 1,    new: false, setCommand: 'S01', min: 0,    max:998,  readOnly: true },
   s02: { value: 2,    new: false, setCommand: 'S02', min: 1,    max:9   },
@@ -93,16 +83,19 @@ function MeltemCVSDevice(master, id) {
   self.id = id;
   self.master = master;
   self.requestTimeout = 5000;
-  self.messagePool = {
+  self.requestPool = {
     fastQueue: [],
     queue: []
   };
   self.groupStatus = [{
-      initialized: false 
+      initialized: false ,
+      fields: [ 's01', 's02', 's03', 's04', 's05', 's06', 's07', 's08', 's09', 's10', 's11', 's12' ] 
     },{
-      initialized: false 
+      initialized: false,
+      fields: [ 's13', 's14', 's15', 's16', 's17', 's18', 's19', 's20', 's21', 's22', 's23', 's24' ]
     },{
-      initialized: false 
+      initialized: false,
+      fields: [ 'set1Rpm', 'set1Current', 'set2Rpm', 'set2Current', 'set3Rpm', 'set3Current', 'set3OpenRpm', 'set3OpenCurrent']
     }
   ];
 
@@ -110,6 +103,13 @@ function MeltemCVSDevice(master, id) {
     update: {
       total: 0,
       failure: 0
+    },
+    responseTime: {
+      min: 0,
+      max: 0,
+      total: 0,
+      count: 0,
+      average: 0
     },
     request: {
       total: 0,
@@ -125,190 +125,207 @@ function MeltemCVSDevice(master, id) {
 
   self.settings = self.getDefaultSettings();
 
-  self.commandSet = [ 
-    { 
-      name : 'D00', 
-      action : function(message, data) {
-        self.logTrace('View current status.');
-
-        try {
-          if (!message || !_.isString(data) || data.length !== 34) {
-            throw new Error('Invalid Data : ' + data);
-          }
-
-          var stepObject = _.find(STEP_TABLE, { 'name' : data.substr(22, 2)});
-          if (!stepObject) {
-            throw new Error('Invalid Step : ' + data.substr(22, 2));
-          }
-
-          var pressure = parseInt(data.substr(10, 4));
-          var rpm = parseInt(data.substr(14, 4));
-          var current = parseInt(data.substr(18, 4));
-          var power = current*24/1000;
-          var temperature = parseInt(data.substr(24, 4));
-          var operatingTime = parseInt(data.substr(28, 5));
-
-          self.master.emit(self.id + '-mode', { sequence: 'mode', value: stepObject.step });
-          self.master.emit(self.id + '-pressure', { sequence: 'pressure', value: pressure });
-          self.master.emit(self.id + '-rpm', { sequence: 'rpm', value: rpm });
-          self.master.emit(self.id + '-current', { sequence: 'current', value: current });
-          self.master.emit(self.id + '-power', { sequence: 'power', value: power });
-          self.master.emit(self.id + '-temperature', { sequence: 'temperature', value: temperature });
-          self.master.emit(self.id + '-operating_time', { sequence: 'operating_time', value: operatingTime});
+  self.responseProcess = {
+    D00 : function(data) {
+      try {
+        if (!_.isString(data) || data.length !== 34) {
+          throw new Error('Invalid Data : ' + data);
         }
-        catch(e) {
-          self.logError(e);
+
+        var stepObject = _.find(STEP_TABLE, { 'name' : data.substr(22, 2)});
+        if (!stepObject) {
+          throw new Error('Invalid Step : ' + data.substr(22, 2));
         }
+
+        var pressure = parseInt(data.substr(10, 4));
+        var rpm = parseInt(data.substr(14, 4));
+        var current = parseInt(data.substr(18, 4));
+        var power = current*24/1000;
+        var temperature = parseInt(data.substr(24, 4));
+        var operatingTime = parseInt(data.substr(28, 5));
+
+        self.master.emit(self.id + '-mode', { sequence: 'mode', value: stepObject.step });
+        self.master.emit(self.id + '-pressure', { sequence: 'pressure', value: pressure });
+        self.master.emit(self.id + '-rpm', { sequence: 'rpm', value: rpm });
+        self.master.emit(self.id + '-current', { sequence: 'current', value: current });
+        self.master.emit(self.id + '-power', { sequence: 'power', value: power });
+        self.master.emit(self.id + '-temperature', { sequence: 'temperature', value: temperature });
+        self.master.emit(self.id + '-operating_time', { sequence: 'operating_time', value: operatingTime});
+
+        return  'done';
+      }
+      catch(e) {
+        self.logError(e);
+        return  'error';
       }
     },
-    {
-      name : 'D60',
-      action : function(message, data) {
-        self.logTrace('View setting part 1.');
-
-        try {
-          if (!message || !_.isString(data) || data.length !== 59) {
-            throw new Error('Invalid Data : ' + data);
-          }
-
-          _.each(SETTINGS1_NAME, function(name, i) {
-            self.settings[name].value  = parseInt(data.substr(10 + i * 4, 4));
-          });
-
-          self.groupStatus[0].initialized = true;
+    D60: function(data) {
+      try {
+        if (!_.isString(data) || data.length !== 59) {
+          throw new Error('Invalid Data : ' + _.isString(data) + ',' + data.length);
         }
-        catch(e) {
-          self.logError(e);
-        }
+
+        _.each(self.group[0].fields, function(name, i) {
+          self.settings[name].value  = parseInt(data.substr(10 + i * 4, 4));
+        });
+
+        self.group[0].initialized = true;
+        return  'done';
+      }
+      catch(e) {
+        self.logError(e);
+        return  'error';
       }
     },
-    {
-      name : 'D61',
-      action : function(message, data) {
-        self.logTrace('View setting part 2.');
-
-        try {
-          if (!message || !_.isString(data) || data.length !== 59) {
-            throw new Error('Invalid Data : ' + data);
-          }
+    D61: function(data) {
+      try {
+        if (!_.isString(data) || data.length !== 59) {
+          throw new Error('Invalid Data : ' + data);
+        } 
       
-          _.each(SETTINGS2_NAME, function(name, i) {
-              self.settings[name].value = parseInt(data.substr(10 + i * 4, 4));
-          });
+        _.each(self.group[1].fields, function(name, i) {
+            self.settings[name].value = parseInt(data.substr(10 + i * 4, 4));
+        });
 
-          self.groupStatus[1].initialized = true;
-         }
-        catch(e) {
-          self.logError(e);
-        }
+        self.group[1].initialized = true;
+        return  'done';
+      }
+      catch(e) {
+        self.logError(e);
+        return  'error';
       }
     },
-    {
-      name : 'D70',
-      action : function(message, data) {
-        self.logTrace('View test setting.');
+    D70: function(data) {
+      self.logTrace('View test setting.');
      
-        try {
-          if (!message || !_.isString(data) || data.length !== 43) {
-            throw new Error('Invalid Data : ' + data);
-          }
+      try {
+        if (!_.isString(data) || data.length !== 43) {
+          throw new Error('Invalid Data : ' + data);
+        }
       
-          _.each(SETTINGS3_NAME, function(name, i) {
-              self.settings[name].value = parseInt(data.substr(10 + i * 4, 4));
-          });
+        _.each(self.group[2].fields, function(name, i) {
+          self.settings[name].value = parseInt(data.substr(10 + i * 4, 4));
+        });
 
-          self.groupStatus[2].initialized = true;
-        }
-        catch(e) {
-          self.logError(e);
-        }
+        self.group[2].initialized = true;
+        return  'done';
+      }
+      catch(e) {
+        self.logError(e);
+        return  'error';
       }
     },
-    {
-      name : 'S60',
-      action : function(message, data) {
-        self.logTrace('Set setting part 1.');
+    S60: function(data) {
+      self.logTrace('Set setting part 1.');
 
-        try {
-          if (!message || !_.isString(data) || data.length !== 59) {
-            throw new Error('Invalid Data : ' + data);
-          }
-
-          _.each(SETTINGS1_NAME, function(name, i) {
-            self.settings[name].value = parseInt(data.substr(10 + i * 4, 4));
-          });
-
-          self.groupStatus[0].initialized = true;
+      try {
+        if (!_.isString(data) || data.length !== 59) {
+          throw new Error('Invalid Data : ' + data);
         }
-        catch(e) {
-          self.logError(e);
-        }
+
+        _.each(self.getDefaultSettings[0].fields, function(name, i) {
+          self.settings[name].value = parseInt(data.substr(10 + i * 4, 4));
+        });
+
+        self.group[0].initialized = true;
+        return  'done';
+      }
+      catch(e) {
+        self.logError(e);
+        return  'error';
       }
     },
-    {
-      name : 'S61',
-      action : function(message, data) {
-        self.logTrace('Set setting part 2.');
+    S61: function(data) {
+      self.logTrace('Set setting part 2.');
 
-        try {
-          if (!message || !_.isString(data) || data.length !== 59) {
-            throw new Error('Invalid Data : ' + data);
-          }
-      
-          _.each(SETTINGS2_NAME, function(name, i) {
-            self.settings[name].value = parseInt(data.substr(10 + i * 4, 4));
-          });
+      try {
+        if (!_.isString(data) || data.length !== 59) {
+          throw new Error('Invalid Data : ' + data);
+        }
+    
+        _.each(self.group[1].fields, function(name, i) {
+          self.settings[name].value = parseInt(data.substr(10 + i * 4, 4));
+        });
 
-          self.groupStatus[1].initialized = true;
-        }
-        catch(e) {
-          self.logError(e);
-        }
+        self.group[1].initialized = true;
+        return  'done';
+      }
+      catch(e) {
+        self.logError(e);
+        return  'error';
       }
     },
-    {
-      name : 'S70',
-      action : function(message, data) {
-        self.logTrace('View test setting.');
+    S70: function(data) {
+      self.logTrace('View test setting.');
       
-        try {
-          if (!message || !_.isString(data) || data.length !== 43) {
-            throw new Error('Invalid Data : ' + data);
-          }
-
-          _.each(SETTINGS3_NAME, function(name, i) {
-            self.settings[name].value = parseInt(data.substr(10 + i * 4, 4));
-          });
-
-          self.groupStatus[2].initialized = true;
+      try {
+        if (!_.isString(data) || data.length !== 43) {
+          throw new Error('Invalid Data : ' + data);
         }
-        catch(e) {
-          self.logError(e);
+
+        _.each(self.group[2].fields, function(name, i) {
+          self.settings[name].value = parseInt(data.substr(10 + i * 4, 4));
+        });
+
+        self.group[2].initialized = true;
+        return  'done';
+      }
+      catch(e) {
+        self.logError(e);
+        return  'error';
+      } 
+    },
+    P00: function(data) {
+      self.logTrace('Save Settings & Restart.');
+      
+      try {
+        if (!_.isString(data) || data.length !== 11) {
+          throw new Error('Invalid Data : ' + data);
         }
+        return  'done';
+      }
+      catch(e) {
+        self.logError(e);
+        return  'error';
+      } 
+    },
+    R00: function(data) {
+      self.logTrace('Restart.');
+      
+      try {
+        if (!_.isString(data) || data.length !== 11) {
+          throw new Error('Invalid Data : ' + data);
+        }
+        return  'done';
+      }
+      catch(e) {
+        self.logError(e);
+        return  'error';
       } 
     }
-  ];
+  };
 
   EventEmitter.call(self);
 
-  self.logTrace('Device : ' + self);
+  self.logTrace('Device :', self);
 
   self.on('data', function(data) {
     try{
-      self.logTrace('onData : ' + data);
+      self.logTrace('onData :', data);
 
-      if ((!self.messagePool.current) || (data.length < 11)) {
+      if ((!self.requestPool.current) || (data.length < 11)) {
         throw new Error('Invalid Data');
       }
-      
-      var command = _.find(self.commandSet , { 'name' : data.substr(7, 3)});
-      if (!command) {
+ 
+      var response = self.responseProcess[data.substr(7, 3)];
+      if (response) {
         throw new Error('Invalid command');
       }
 
-      command.action(self.messagePool.current, data);
-      self.master.doneMessage(self.messagePool.current.seq);
-      self.messagePool.current = undefined;
+      self.updateRequestStatistics(response(self.requestPool.current, data));
+      self.master.doneMessage(self.requestPool.current.seq);
+
+      self.requestPool.current = undefined;
       self.statistics.request.succss = self.statistics.request.success + 1;
     }
     catch(e) {
@@ -320,26 +337,37 @@ function MeltemCVSDevice(master, id) {
     var result = {};
 
     try {
+      result.cmd = params.cmd;
+
       if (!self.initialized) {
         throw new Error('The device is not initialized.');
       }
 
-      self.logTrace('Device Control : ' + params);
+      self.logTrace('Device Control :', params);
       if (params.cmd === 'set') {
-        if (!params.settings || !self.setSettings(params.settings, cb)) { 
+        if (!params.settings) {
           throw new Error('The parameter is incorrect.');
         }
+
+        self.setSettings(params.settings, cb);
       }
       else if (params.cmd === 'get') {
-        result.settings = self.getSettings();
-        self.logTrace('Request GET result : ' + result);
+        var settings = {};
+        _.each(self.getSettings(), function(setting, key) {
+          settings[key] = { value: setting.value, min: setting.min, max: setting.max };
+        });
+        self.logTrace('Request GET result :', result);
+
+        result.result = { settings: settings};
+        return cb && cb(undefined, JSON.stringify(result));
+      }
+      else if (params.cmd === 'reset') {
+        self.factoryReset(cb);
       }
       else {
         throw new Error('This command is not supported.');
       }
 
-      result.result = 'success';
-      return cb && cb(undefined, JSON.stringify(result));
     }
     catch(e) {
       result.result = 'failed';
@@ -347,26 +375,53 @@ function MeltemCVSDevice(master, id) {
       return cb && cb(JSON.stringify(result));
     }
   });
-  
-  self.on('timeout', function(seq) {
+ 
+  self.on('waitDone', function(request) {
+    try{
+      if (!self.requestPool.current) {
+        throw new Error('Invalid Data');
+      }
+
+      if (self.requestPool.current !== request) {
+        throw new Error('Wait mismatch : ' + self.requestPool.current.seq + ' !== ' + request.seq);
+      }
+
+      self.master.doneMessage(self.requestPool.current.seq);
+
+      self.requestPool.current = undefined;
+      self.statistics.request.succss = self.statistics.request.success + 1;
+    }
+    catch(e) {
+      self.logError(e);
+    }
+  });
+
+  self.on('timeout', function(request) {
     try {
-      if (self.messagePool.current.seq !== seq) {
-        throw new Error('Occurred timeout but seq mismatch : ' + self.messagePool.current.seq + ' !== ' + seq);
+      if (self.requestPool.current !== request) {
+        throw new Error('Occurred timeout but seq mismatch : ' + self.requestPool.current.seq + ' !== ' + request.seq);
       }
 
-      self.master.cancelMessage(self.messagePool.current.seq);
-      if (self.messagePool.current.timeoutCB) {
-        self.messagePool.current.timeoutCB();
+      if (self.requestPool.current.timeoutCB) {
+        self.requestPool.current.timeoutCB();
+      }
+      self.requestPool.current = undefined;
+    }
+    catch(e) {
+      self.logError(e);
+    }
+  });
+
+  self.on('done', function(request) {
+    try {
+      if (self.requestPool.current !== request) {
+        throw new Error('Occurred done but seq mismatch : ' + self.requestPool.current.seq + ' !== ' + request.seq);
       }
 
-      var message = 'Request Timeout : ' + self.id + ' ' + self.messagePool.current.name;
-
-      self.messagePool.current = undefined;
-      self.messagePool.fastQueue = [];
-      self.messagePool.queue = [];
-      self.statistics.request.failure = self.statistics.request.failure + 1;
-
-      throw new Error(message);
+      if (self.requestPool.current.successCB) {
+        self.requestPool.current.successCB();
+      }
+      self.requestPool.current = undefined;
     }
     catch(e) {
       self.logError(e);
@@ -374,26 +429,15 @@ function MeltemCVSDevice(master, id) {
   });
 
   setInterval(function() {
-    if (!self.messagePool.current) {
-      var message = self.messagePool.fastQueue.shift();
-      if (!message) {
-        message = self.messagePool.queue.shift();
+    if (!self.requestPool.current) {
+      self.requestPool.current = self.requestPool.fastQueue.shift();
+      if (self.requestPool.current) {
+        self.master.fastRequest(self, self.requestPool.current);
       }
-
-      if (message) {
-        if (message.type === 'cmd') {
-          self.statistics.request.total = self.statistics.request.total + 1;
-          if (message.fast) {
-            message.seq = self.master.sendFastMessage(self, message.msgId, message.payload, self.requestTimeout);
-          }
-          else {
-            message.seq = self.master.sendMessage(self, message.msgId, message.payload, self.requestTimeout);
-          }
-
-          self.messagePool.current = message;
-        }
-        else if (message.type === 'done') {
-          return (message.cb) && message.cb();
+      else {
+        self.requestPool.current = self.requestPool.queue.shift();
+        if (self.requestPool.current) {
+          self.master.sendRequest(self, self.requestPool.current);
         }
       }
     }
@@ -402,37 +446,58 @@ function MeltemCVSDevice(master, id) {
 
 util.inherits(MeltemCVSDevice, EventEmitter);
 
-MeltemCVSDevice.prototype.logError = function(error) {
-  var self =  this;
+MeltemCVSDevice.prototype.logError = function() {
+  var self = this;
 
   if (self.log.error) {
-    if (_.isString(error)) {
-      logger.error('[' + self.constructor.name + ']', error);
-    }
-    else {
-      if (self.log.callstack || !error.message) {
-        logger.error('[' + self.constructor.name + ']', error);
+    var i;
+    var message = '[' + self.constructor.name + ']';
+
+    for(i = 0 ; i < arguments.length ; i++) {
+      if (_.isObject(arguments[i])) {
+        message = message + ' ' + arguments[i];
       }
       else {
-        logger.error('[' + self.constructor.name + ']', error.message);
+        message = message + ' ' + arguments[i];
       }
     }
+
+    logger.error(message);
   }
 };
 
-MeltemCVSDevice.prototype.logTrace = function(message) {
+MeltemCVSDevice.prototype.logTrace = function() {
   var self =  this;
 
   if (self.log.trace) {
-    logger.trace('[' + self.constructor.name + ']', message);
+    var i;
+    var message = '[' + self.constructor.name + ']';
+
+    for(i = 0 ; i < arguments.length ; i++) {
+      if (_.isObject(arguments[i])) {
+        message = message + ' ' + arguments[i];
+      }
+      else {
+        message = message + ' ' + arguments[i];
+      }
+    }
+
+    logger.trace(message);
   }
 };
 
+MeltemCVSDevice.prototype.isInitialized = function() {
+  var self = this;
+
+  return  self.initialized;
+};
+
 MeltemCVSDevice.prototype.getDefaultSettings = function() {
-  var settings = _.clone(DEFAULT_SETTINGS);
+  var settings = {};
 
   try{
-    _.each(SETTINGS_NAME, function(name) {
+    _.each(DEFAULT_SETTINGS, function(setting, name) {
+      settings[name] = _.clone(setting);
       if (CONFIG.meltem.config[name]) {
         if (CONFIG.meltem.config[name].min) {
           settings[name].min = CONFIG.meltem.config[name].min;
@@ -450,6 +515,23 @@ MeltemCVSDevice.prototype.getDefaultSettings = function() {
   return  settings;
 };
 
+MeltemCVSDevice.prototype.getInitTimeout = function() {
+  var self = this;
+  var timeout = 0;
+
+  _.each(self.group, function(status) {
+    if (!status.initialized) {
+      timeout = timeout + self.requestTimeout;
+    }
+  });
+
+  if (timeout < self.requestTimeout) {
+    timeout = self.requestTimeout;
+  }
+
+  return  timeout;
+};
+
 MeltemCVSDevice.prototype.getRequestTimeout = function() {
   var   self = this;
 
@@ -460,58 +542,43 @@ MeltemCVSDevice.prototype.init = function () {
   var self = this;
 
   return new Promise(function(resolve) {
-    var date = new Date();
-    
     var messages = [];
-
-    if (!self.groupStatus[0].initialized) {
+  
+    if (!self.group[0].initialized) {
       messages.push({
         type: 'cmd',
-        msgId : date.getMilliseconds(),
         name: 'D60',
-        payload: 'D60',
-        timeoutCB : function() {
-          self.logTrace('Group 1 initialization failed');
-          resolve('timeout');
-        }
+        payload: 'D60'
       });
     }
 
-    if (!self.groupStatus[1].initialized) {
+    if (!self.group[1].initialized) {
       messages.push({
         type: 'cmd',
-        msgId : date.getMilliseconds() + 1,
         name: 'D61',
-        payload: 'D61',
-        timeoutCB : function() {
-          self.logTrace('Group 2 initialization failed');
-          resolve('timeout');
-        }
+        payload: 'D61'
       });
     }
 
-    if (!self.groupStatus[2].initialized) {
+    if (!self.group[2].initialized) {
       messages.push({
         type: 'cmd',
-        msgId : date.getMilliseconds() + 2,
         name: 'D70',
-        payload: 'D70',
-        timeoutCB : function() {
-          self.logTrace('Group 3 initialization failed');
-          resolve('timeout');
-        }
+        payload: 'D70'
       });
     }
   
-    messages.push({
-      type: 'done',
-      cb: function () {
+    self.sendRequest(messages,
+      function () {
         self.initialized = true;
+        self.logTrace('Device[', self.id, '] Initalized done.');
         resolve('done');
+      },
+      function() {
+        self.logTrace('Device[', self.id, '] initialization failed.');
+        resolve('timeout');
       }
-    });
-
-    self.postMessage(messages);
+    );
   });
 };
 
@@ -519,37 +586,33 @@ MeltemCVSDevice.prototype.update = function () {
   var self = this;
 
   return new Promise(function(resolve) {
-    var date = new Date();
     self.statistics.update.total = self.statistics.update.total + 1;
-    self.postMessage([{
-        type: 'cmd',
-        msgId : date.getMilliseconds(),
-        name: 'D00',
-        payload: 'D00',
-        timeoutCB : function() {
-          self.statistics.update.failure = self.statistics.update.failure + 1;
-          var failureRatio = self.statistics.update.failure * 100.0 / self.statistics.update.total;
 
-          var message = 'State update faile [ ';
-          message = message + self.statistics.update.total;
-          message = message + ' / ';
-          message = message + self.statistics.update.total - self.statistics.update.failure;
-          message = message + ' / ';
-          message = message + self.statistics.update.failure;
-          message = message + ' / ';
-          message = message + failureRatio.toFixed(2);
-          message = message + ' % ]';
-          self.logTrace(message);
-          resolve('timeout');
-        }
+    self.sendRequest([ { type: 'cmd', name: 'D00', payload: 'D00' }],
+      function () {
+        self.logTrace('Device[', self.id, '] state updated');
+        resolve('done');
       },
-      {
-        type: 'done',
-        cb: function () {
-          resolve('done');
-        }
+      function() {
+        self.statistics.update.failure = self.statistics.update.failure + 1;
+        var failureRatio = self.statistics.update.failure * 100.0 / self.statistics.update.total;
+
+        var message = 'Device[';
+        message = message + self.id;
+        message = message + '] state update failed [ ';
+        message = message + self.statistics.update.total;
+        message = message + ' / ';
+        message = message + (self.statistics.update.total - self.statistics.update.failure);
+        message = message + ' / ';
+        message = message + self.statistics.update.failure;
+        message = message + ' / ';
+        message = message + failureRatio.toFixed(2);
+        message = message + ' % ]';
+        self.logTrace(message);
+
+        resolve('timeout');
       }
-    ]);
+    );
   });
 };
 
@@ -562,6 +625,67 @@ MeltemCVSDevice.prototype.run = function () {
   else {
     return  self.update();
   }
+};
+
+MeltemCVSDevice.prototype.updateRequestStatistics = function(result) {
+  var self =this;
+
+  var date = new Date();
+  var request = self.requestPool.current;
+  var session =request.current;
+
+  if (session) {
+    var elapsedTime = date.getTime() - session.requestTime;
+    if  (result === 'done') {
+      self.statistics.request.success = self.statistics.request.success + 1; 
+    }
+    else {
+      self.statistics.request.failure = self.statistics.request.failure + 1; 
+    }
+  
+    if (!self.statistics.responseTime.min || (self.statistics.responseTime.min > elapsedTime)){
+      self.statistics.responseTime.min = elapsedTime;
+    }
+  
+    if (!self.statistics.responseTime.max || (self.statistics.responseTime.max < elapsedTime)){
+        self.statistics.responseTime.max = elapsedTime;
+    }
+  
+    self.statistics.responseTime.count = self.statistics.responseTime.count + 1; 
+    if (!self.statistics.responseTime.average) {
+      self.statistics.responseTime.average = elapsedTime;
+      self.statistics.responseTime.total = elapsedTime;
+    }
+    else {
+      self.statistics.responseTime.total = self.statistics.responseTime.total + elapsedTime;
+      self.statistics.responseTime.average = (self.statistics.responseTime.total / self.statistics.responseTime.count);
+    }
+  }
+};
+
+MeltemCVSDevice.prototype.responseCB = function(data) {
+  var self = this;
+  try{
+    self.logTrace('onData :', data);
+
+    if ((!self.requestPool.current) || (data.length < 11)) {
+      throw new Error('Invalid Data');
+    }
+ 
+    var cmd = data.substr(7, 3);
+    var response = self.responseProcess[cmd];
+    if (!response) {
+      throw new Error('Invalid command[' + cmd + ']');
+    }
+
+    self.updateRequestStatistics(response(data, self.requestPool.current));
+  }
+  catch(e) {
+    self.logError(e);
+
+    return  undefined;
+  }
+  return  'done';
 };
 
 MeltemCVSDevice.prototype.isSettings1 = function(settings) {
@@ -610,37 +734,28 @@ MeltemCVSDevice.prototype.setSettings1 = function (settings, resultCB) {
 
   self.logTrace('Set Settings 1');
   return new Promise(function(resolve) {
-    var date = new Date();
     var payload = 'S60';
 
-    _.each(SETTINGS1_NAME, function(name) {
+    _.each(self.group[0].fields, function(name) {
       payload = payload + valueToString(self.settings[name], settings[name]);
     });
 
-    self.fastMessage([{
-        type: 'cmd',
-        msgId : date.getMilliseconds(),
-        name: 'S60',
-        payload: payload,
-        timeoutCB : function() {
-          var result = { reuslt: 'failed', settings: 'timeout'};
+    self.sendRequest([{ type: 'cmd', name: 'S60', payload: payload }],
+      function () {
+        var result = { reuslt: 'success'};
 
-          self.logTrace('Setting failed');
-          resolve('timeout');
-          resultCB(JSON.stringify(result), undefined);
-        }
+        self.logTrace('Settings successfully done');
+        resolve('done');
+        resultCB(undefined, JSON.stringify(result));
       },
-      {
-        type: 'done',
-        cb: function () {
-          var result = { reuslt: 'success'};
+      function() {
+        var result = { cmd: 'set', reuslt: 'failed', message: 'timeout'};
 
-          self.logTrace('Settings successfully done');
-          resolve('done');
-          resultCB(undefined, JSON.stringify(result));
-        }
+        self.logTrace('Setting failed');
+        resolve('timeout');
+        resultCB(JSON.stringify(result), undefined);
       }
-    ]);
+    );
   });
 };
 
@@ -649,164 +764,178 @@ MeltemCVSDevice.prototype.setSettings2 = function (settings, resultCB) {
 
   self.logTrace('Set Settings 2');
   return new Promise(function(resolve) {
-    var date = new Date();
     var payload = 'S61';
 
-    _.each(SETTINGS2_NAME, function(name) {
+    _.each(self.group[1].fields, function(name) {
       payload = payload + valueToString(self.settings[name], settings[name]);
     });
 
-    self.fastMessage([{
-        type: 'cmd',
-        msgId : date.getMilliseconds(),
-        name: 'S61',
-        payload: payload,
-        timeoutCB : function() {
-          var result = { reuslt: 'failed', settings: 'timeout'};
+    self.sendRequest([{ type: 'cmd', name: 'S61', payload: payload}],
+      function () {
+        var result = { reuslt: 'success'};
 
-          self.logTrace('Setting failed');
-          resolve('timeout');
-          resultCB(JSON.stringify(result), undefined);
-        }
+        self.logTrace('Settings successfully done');
+        resolve('done');
+        resultCB(undefined, JSON.stringify(result));
       },
-      {
-        type: 'done',
-        cb: function () {
-          var result = { reuslt: 'success'};
+      function() {
+        var result = { cmd: 'set', reuslt: 'failed', message: 'timeout'};
 
-          self.logTrace('Settings successfully done');
-          resolve('done');
-          resultCB(undefined, JSON.stringify(result));
-        }
+        self.logTrace('Setting failed');
+        resolve('timeout');
+        resultCB(JSON.stringify(result), undefined);
       }
-    ]);
+    );
   });
 };
 
 MeltemCVSDevice.prototype.setSettingsTest = function (settings, resultCB) {
   var self = this;
 
-  self.logTrace('Set Test Settings');
+  self.logTrace('Set Settings Test');
   return new Promise(function(resolve) {
-    var date = new Date();
     var payload = 'S70';
 
-    _.each(SETTINGS3_NAME, function(name) {
+    _.each(self.group[2].fields, function(name) {
       payload = payload + valueToString(self.settings[name], settings[name]);
     });
 
-    self.fastMessage([{
-        type: 'cmd',
-        msgId : date.getMilliseconds(),
-        name: 'S70',
-        payload: payload,
-        timeoutCB : function() {
-          var result = { reuslt: 'failed', settings: 'timeout'};
+    self.sendRequest([{ type: 'cmd', name: 'S70', payload: payload }],
+      function () {
+        var result = { reuslt: 'success'};
 
-          self.logTrace('Setting failed');
-          resolve('timeout');
-          resultCB(JSON.stringify(result), undefined);
-        }
+        self.logTrace('Settings successfully done');
+        resolve('done');
+        resultCB(undefined, JSON.stringify(result));
       },
-      {
-        type: 'done',
-        cb: function () {
-          var result = { reuslt: 'success'};
+      function() {
+        var result = { cmd: 'set', reuslt: 'failed', message: 'timeout'};
 
-          self.logTrace('Settings successfully done');
-          resolve('done');
-          resultCB(undefined, JSON.stringify(result));
-        }
+        self.logTrace('Setting failed');
+        resolve('timeout');
+        resultCB(JSON.stringify(result), undefined);
       }
-    ]);
+    );
+  });
+};
+
+MeltemCVSDevice.prototype.reset = function (resultCB) {
+  var self = this;
+
+  self.logTrace('reset');
+  return new Promise(function(resolve) {
+    var payload = 'R00';
+
+    self.fastRequest([{
+        type: 'cmd',
+        name: 'R00',
+        payload: payload,
+      }, {
+        type: 'wait',
+        time: 5000
+      }],
+      function () {
+        var result = { reuslt: 'success'};
+
+        self.logTrace('Reset successfully done');
+        resolve('done');
+        resultCB(undefined, JSON.stringify(result));
+      },
+      function() {
+        var result = { cmd: 'reset', reuslt: 'failed', message: 'timeout'};
+
+        self.logTrace('Reset failed');
+        resolve('timeout');
+        resultCB(JSON.stringify(result), undefined);
+      }
+    );
   });
 };
 
 MeltemCVSDevice.prototype.setSettings = function (settings, resultCB) {
   var self = this;
 
-  self.logTrace('Set Settings 1');
+  self.logTrace('setSettings :', JSON.stringify(settings));
   if (self.isSettings1(settings) || self.isSettings2(settings) || self.isSettingsTest(settings)){
     return new Promise(function(resolve) {
-      var payload;
       var messages = [];
-      var date = new Date();
-  
+      var payload;
+
       if (self.isSettings1(settings)){
+        self.logTrace('Set Settings 1');
         payload = 'S60';
-        _.each(SETTINGS1_NAME, function(name){
+        _.each(self.group[0].fields, function(name){
           payload = payload + valueToString(self.settings[name], settings[name]);
         });
-  
+ 
         messages.push({
           type: 'cmd',
-          msgId : date.getMilliseconds(),
           name: 'S60',
-          payload: payload,
-          timeoutCB : function() {
-            var result = { reuslt: 'failed', settings: 'timeout'};
-  
-            self.logTrace('Setting failed');
-            resolve('timeout');
-            resultCB(JSON.stringify(result), undefined);
-          }
+          payload: payload
         });
       }
   
       if (self.isSettings2(settings)){
+        self.logTrace('Set Settings 2');
         payload = 'S61';
-        _.each(SETTINGS2_NAME, function(name){
+        _.each(self.group[1].fields, function(name){
           payload = payload + valueToString(self.settings[name], settings[name]);
         });
   
         messages.push({
           type: 'cmd',
-          msgId : date.getMilliseconds(),
           name: 'S61',
-          payload: payload,
-          timeoutCB : function() {
-            var result = { reuslt: 'failed', settings: 'timeout'};
-  
-            self.logTrace('Setting failed');
-            resolve('timeout');
-            resultCB(JSON.stringify(result), undefined);
-          }
+          payload: payload
         });
       }
       
       if (self.isSettingsTest(settings)) {
+        self.logTrace('Set Settings Test');
         payload = 'S70';
-        _.each(SETTINGS3_NAME, function(name){
+        _.each(self.group[2].fields, function(name){
           payload = payload + valueToString(self.settings[name], settings[name]);
         });
   
         messages.push({
           type: 'cmd',
-          msgId : date.getMilliseconds(),
           name: 'S70',
-          payload: payload,
-          timeoutCB : function() {
-            var result = { reuslt: 'failed', settings: 'timeout'};
-  
-            self.logTrace('Setting failed');
-            resolve('timeout');
-            resultCB(JSON.stringify(result), undefined);
-          }
+          payload: payload
         });
       }
-  
-      messages.push({
-        type: 'done',
-        cb: function () {
-          var result = { reuslt: 'success'};
+
+      if (messages.length) {
+        self.logTrace('Save Settings');
+        payload = 'P00';
+
+        messages.push({
+          type: 'cmd',
+          name: 'S70',
+          payload: payload
+        });
+      }
+
+      self.fastRequest(messages,
+        function () {
+          var result = { cmd: 'set', result: { settings : {}}};
+
+          _.each(settings, function(value , key) {
+            if (self.settings[key]) {
+              result.result.settings[key] = { value: self.settings[key].value, min: self.settings[key].min, max: self.settings[key].max };
+            }
+          });
 
           self.logTrace('Settings successfully done');
           resolve('done');
           resultCB(undefined, JSON.stringify(result));
+        },
+        function() {
+          var result = { cmd: 'set', result: 'failed', message: 'timeout'};
+  
+          self.logTrace('Setting failed');
+          resolve('timeout');
+          resultCB(JSON.stringify(result), undefined);
         }
-      });
-
-      self.fastMessage(messages);
+      );
     });
   }
 
@@ -819,6 +948,11 @@ MeltemCVSDevice.prototype.getSettings = function() {
   return  _.cloneDeep(self.settings);
 };
 
+MeltemCVSDevice.prototype.getStatistics = function() {
+  var self = this;
+
+  return  self.statistics;
+};
 
 MeltemCVSDevice.prototype.setValue = function(field, value) {
   var self = this;
@@ -833,33 +967,48 @@ MeltemCVSDevice.prototype.setValue = function(field, value) {
   return  false;
 };
 
-MeltemCVSDevice.prototype.postMessage = function(messages) {
+MeltemCVSDevice.prototype.sendRequest = function(messages, successCB, timeoutCB) {
   var self = this;
 
   try {
-    if (!_.isArray(messages)) {
-      throw new Error('Messages is not array');
-    }
+    var date = new Date();
 
-     self.messagePool.queue = self.messagePool.queue.concat(messages);
+    var request = {
+      id: date.getTime(),
+      messages: messages,
+      successCB: successCB,
+      timeoutCB: timeoutCB
+    };
+
+    request.messages.push({
+      type: 'done'
+    });
+
+    self.requestPool.queue.push(request);
   }
   catch(e) {
     self.logError(e);
   }
 };
 
-MeltemCVSDevice.prototype.fastMessage = function(messages) {
+MeltemCVSDevice.prototype.fastRequest = function(messages, successCB, timeoutCB) {
   var self = this;
 
   try {
-    if (!_.isArray(messages)) {
-      throw new Error('Messages is not array');
-    }
+    var date = new Date();
 
-    _.each(messages, function(message) {
-      message.fast = true;
-      self.messagePool.fastQueue.push(message);
+    var request = {
+      id: date.getTime(),
+      messages: messages,
+      successCB: successCB,
+      timeoutCB: timeoutCB
+    };
+
+    request.messages.push({
+      type: 'done'
     });
+
+    self.requestPool.fastQueue.push(request);
   }
   catch(e) {
     self.logError(e);

@@ -33,16 +33,17 @@ function MeltemCVSMaster (port) {
   self.serialPorts = [];
   self.listeners = [];
   self.devices = [];
-  self.messagePool = {
+  self.requestPool = {
     fastQueue: [],
     queue: [],
     sequence: 0,
     current: undefined
   };
   self.statistics = {
-    devices: {
-      initialized: 0
-    }
+    init: {
+      timeout: 0,
+      done: 0
+    },
   };
   self.log = {
     info: true,
@@ -50,17 +51,17 @@ function MeltemCVSMaster (port) {
     error: true,
     callback: false
   };
-
+  self.stop = true;
   self.port = port;
-  self.logTrace('Create new instance : ' + port);
+  self.logTrace('Create new instance :', port);
 
   self.loadConfig(CONFIG);
 
-  self.logTrace('ID : ' + self.getID());
+  self.logTrace('ID :', self.getID());
 
   EventEmitter.call(self);
 
-  self.logTrace('port : ' + port);
+  self.logTrace('port :', port);
   if (_.isNumber(port)) {
     self.startNetServer(port);
   }
@@ -71,39 +72,18 @@ function MeltemCVSMaster (port) {
   // Called when net server is connected.
   self.on('connect', function() {
     var self = this;
-    var deviceCount = 0;
-    var initWait = 0;
 
+    self.stop = false;
     self.logInfo('Connected');
-    _.each(self.devices, function(device) {
-      deviceCount = deviceCount+1;
-      device.init().then(function(response) { 
-        if (response === 'done') {
-          self.statistics.devices.initialized = self.statistics.devices.initialized + 1;
-          self.logTrace('Initialization done[ ' + self.statistics.devices.initialized + ' / ' + self.devices.length + ' ]');
-        }
-        deviceCount = deviceCount - 1;
-      });
+    self.initDevices().then(function() {
+      self.emit('update');
     });
-
-    initWait = setInterval(function() {
-      if (deviceCount === 0) {
-        clearInterval(initWait);
-        self.logTrace('initialized done');
-        self.logTrace('update interval : ' + self.getUpdateInterval() + ' ms');
-
-        self.intervalHandler = setInterval(function() {
-          _.each(self.devices, function(device) {
-            device.run();
-          });
-        }, self.getUpdateInterval());
-      }
-    }, 100);
   });
 
   self.on('disconnect', function() {
     var self = this;
 
+    self.stop = true;
     self.logInfo('Disconnected');
     if (self.intervalHandler) {
       clearInterval(self.intervalHandler);
@@ -111,55 +91,114 @@ function MeltemCVSMaster (port) {
     }
   });
 
+  self.on('update', function() {
+    var self = this;
+
+    self.logTrace('update interval :', self.getUpdateInterval(), 'ms');
+
+    self.updateDevices(self.getUpdateInterval(true)).then(function() {
+      if (!self.stop) {
+        self.emit('update');
+      }
+    });
+  });
+
   self.on('data', function (payload) {
     var self = this;
-    var masterId = payload.substr(1, 3);
- 
-    if (masterId !== self.getID()) {
-      self.logTrace('Invalid Master ID : ' + masterId + ' != ' + self.getID());
-      self.logTrace('Payload : ' + payload);
-    }
-    else {
-      var slaveId = payload.substr(4, 3);
-
-      self.devices.map(function (device) {
-        if (device.id === slaveId) {
-          device.emit('data', payload);
+    try {
+      var masterId = payload.substr(1, 3);
+      var deviceId = payload.substr(4, 3);
+      var cmd      = payload.substr(7, 3);
+   
+      if (masterId !== self.getID()) {
+        throw new Error('Invalid MasterID[' + masterId + ']');
+      }
+  
+      var device = _.find(self.devices, { id: deviceId});
+      if (!device) {
+        throw new Error('Invalid DeviceID[' + deviceId + ']');
+      }
+  
+      var request = self.requestPool.current;
+      if (request) {
+        if (request.device !== device) {
+          self.logTrace('Device[', deviceId, '] has received a delayed response.');
+          device.responseCB(payload);
         }
-      });
+        else {
+          if (!request.current || request.current.name !== cmd) {
+            throw new Error('Invalid Command[' + cmd + ']');
+          }
+    
+          if (!device.responseCB(payload)) {
+            throw new Error('Not supported command[' + cmd + ']');
+          }
+  
+          if (request.current.timeoutHandler) {
+            clearTimeout(request.current.timeoutHandler);
+          }
+  
+          request.current = undefined;
+        }
+      }
+    }
+    catch(e) {
+      self.logError(e);
+      self.logError('Payload : ', payload);
     }
   });
 
-  self.messageProcessHandler = setInterval(function() {
-    if (!self.messagePool.current) {
-      var message;
-
-      message = self.messagePool.fastQueue.shift();
-      if (!message) {
-        message = self.messagePool.queue.shift();
+  self.requestProcessHandler = setInterval(function() {
+    if (!self.requestPool.current) {
+      self.requestPool.current = self.requestPool.fastQueue.shift();
+      if (!self.requestPool.current) {
+        self.requestPool.current = self.requestPool.queue.shift();
       }
+    } 
+    if (self.requestPool.current) {
+      var request = self.requestPool.current;
+ 
+      if (!request.current) {
+        var message = request.messages.shift();
+        if (message) {
+          if (message.type === 'cmd') {
+            var date = new Date();
+            var payload = '<' + request.device.id + self.getID() + message.payload + '>';
+            self.logTrace('Send :', payload);
+            message.requestTime = date.getTime();
 
-      if (message && message.device) {
-        var timeout;
+            _.each(self.listeners, function(listener){
+              listener.write(payload + '\r\n');
+            });
 
-        if (message.timeout) {
-          timeout  = message.timeout;
+            message.timeoutHandler = setTimeout(function() {
+              self.logError('Timeout :', request.device.id, ',', request.device.requestTimeout);
+              request.device.emit('timeout', request);
+              if (self.requestPool.current === request) {
+                self.requestPool.current = undefined;
+              }
+            }, request.device.requestTimeout);
+  
+            request.current = message;
+          }
+          else if (message.type === 'wait') {
+            message.timeoutHandler = setTimeout(function() {
+              self.logTrace('Wait :', request.device.id + ', ' + message.time);
+              request.device.emit('waitDone', request);
+              if (self.requestPool.current === request) {
+                self.requestPool.current = undefined;
+              }
+            }, message.time);
+            request.current = message;
+          }
+          else if (message.type === 'done') {
+            request.device.emit('done', request);
+            self.requestPool.current = undefined;
+          }
         }
         else {
-          timeout = self.config.requestTimeout;
+          self.requestPool.current = undefined;
         }
-
-        _.each(self.listeners, function(listener){
-          var payload = '<' + message.device.id + self.getID() + message.payload + '>\r\n';
-          self.logTrace('Send : ' + payload);
-          listener.write(payload);
-        });
-
-        message.timeoutHandler = setTimeout(function() {
-          self.logError('Timed out : ' + message.device.id + ', ' + message.seq + ', ' + timeout);
-          message.device.emit('timeout', message.seq);
-        }, timeout);
-        self.messagePool.current = message;
       }
     }
   }, 100);
@@ -176,29 +215,43 @@ MeltemCVSMaster.prototype.logInfo= function(message) {
   }
 };
 
-MeltemCVSMaster.prototype.logError = function(error) {
+MeltemCVSMaster.prototype.logError = function() {
   var self = this;
 
   if (self.log.error) {
-    if (_.isString(error)) {
-      logger.error('[' + self.constructor.name + ']', error);
-    }
-    else {
-      if (self.log.callstack || !error.message) {
-        logger.error('[' + self.constructor.name + ']', error);
+    var i;
+    var message = '[' + self.constructor.name + ']';
+
+    for(i = 0 ; i < arguments.length ; i++) {
+      if (_.isObject(arguments[i])) {
+        message = message + ' ' + arguments[i];
       }
       else {
-        logger.error('[' + self.constructor.name + ']', error.message);
+        message = message + ' ' + arguments[i];
       }
     }
+
+    logger.error(message);
   }
 };
 
-MeltemCVSMaster.prototype.logTrace = function(message) {
-  var self = this;
+MeltemCVSMaster.prototype.logTrace = function() {
+  var self =  this;
 
   if (self.log.trace) {
-    logger.trace('[' + self.constructor.name + ']', message);
+    var i;
+    var message = '[' + self.constructor.name + ']';
+
+    for(i = 0 ; i < arguments.length ; i++) {
+      if (_.isObject(arguments[i])) {
+        message = message + ' ' + arguments[i];
+      }
+      else {
+        message = message + ' ' + arguments[i];
+      }
+    }
+
+    logger.trace(message);
   }
 };
 
@@ -232,7 +285,7 @@ MeltemCVSMaster.prototype.loadConfig = function(CONFIG) {
     self.config.loopInterval = self.config.loopIntervalMin;
   }
 
-  self.logTrace('Config : ' + self.config);
+  self.logTrace('Config :', self.config);
   try {
     self.config.port = [];
     if (CONFIG.meltem.master.port) {
@@ -263,8 +316,30 @@ MeltemCVSMaster.prototype.startNetServer = function(port) {
       var self = this;
       var payload = new Buffer(data).toString().trim();
 
-      if ((payload.length < 11) || (payload.substr(0, 1) !== START_OF_FRAME) || (payload.substr(payload.length - 1, 1) !== END_OF_FRAME)) {
-        self.logError('Invalid Data : ' + payload);
+      if (payload.length < 11) {
+        self.parent.logError('Invalid Data : ', payload);
+      }
+      else if ((payload.substr(0, 1) !== START_OF_FRAME) || (payload.substr(payload.length - 1, 1) !== END_OF_FRAME)) {
+        var startPosition = -1;
+        var endPosition = -1;
+
+        while(true) {
+          startPosition = payload.indexOf(START_OF_FRAME, endPosition + 1);
+          if (startPosition === -1) {
+            break;
+          }
+
+          endPosition = payload.indexOf(END_OF_FRAME, startPosition + 1);
+          if (endPosition === -1) {
+            break;
+          }
+
+          var length = endPosition - startPosition + 1;
+          if (length < 11) {
+            break;
+          }
+          self.parent.emit('data', payload.substr(startPosition, length));
+        }
       }
       else {
         self.parent.emit('data', payload);
@@ -272,20 +347,24 @@ MeltemCVSMaster.prototype.startNetServer = function(port) {
     });
 
     listener.on('end', function () {
+      var self = this;
+
       clearInterval(listener.nextUpdateTimeout);
       self.parent.listeners = _.filter(self.parent.listeners, function(element) {
         return (element !== listener);
       });
 
-      self.logTrace('FIN received');
+      self.parent.logTrace('FIN received');
     });
 
     listener.on('close', function () {
+      var self = this;
+
       clearInterval(listener.nextUpdateTimeout);
       self.parent.listeners = _.filter(self.parent.listeners, function(element) {
         return (element !== listener);
       });
-      self.logTrace('Socket closed');
+      self.parent.logTrace('Socket closed');
     });
 
     master.emit('connect');
@@ -304,20 +383,20 @@ MeltemCVSMaster.prototype.openSerialServer = function(name) {
     self.logTrace('Connected');
 
     if (err) {
-      self.logError('Serial port error during opening :' + err);
+      self.logError('Serial port error during opening :', err);
       return;
     } else {
       self.logTrace('No err, Connected');
     }
 
     self.server.on('error', function onError(err) {
-      self.logError('Serial port error :' + err);
+      self.logError('Serial port error :', err);
       return;
     });
 
     self.server.on('close', function onClose(err) {
       if (err) {
-        self.logError('Serial port error during closing :' +  err);
+        self.logError('Serial port error during closing :',  err);
         // TODO: if error, isn't this closed?
       } else {
         self.logTrace('Serial port is closed');
@@ -327,7 +406,7 @@ MeltemCVSMaster.prototype.openSerialServer = function(name) {
     });
 
     self.server.on('disconnect', function onDisconnect(err) {
-      self.logError('Serial port is disconnected : ' + err);
+      self.logError('Serial port is disconnected :', err);
 
       return;
     });
@@ -357,7 +436,7 @@ MeltemCVSMaster.prototype.addDevice = function(id) {
     device = Device.create(self, id);
     if (device) {
       self.devices.push(device);
-  
+
       self.config.loopInterval = self.config.loopIntervalMin;
       _.each(self.devices, function(device){
         self.config.loopInterval = self.config.loopInterval + device.getRequestTimeout();
@@ -376,69 +455,144 @@ MeltemCVSMaster.prototype.getDevice = function(id) {
   });
 };
 
-MeltemCVSMaster.prototype.sendFastMessage = function (device, msgId, payload, timeout) {
+MeltemCVSMaster.prototype.initDevices = function() {
   var self = this;
+  var deviceCount = self.devices.length;
 
-  self.messagePool.sequence = self.messagePool.sequence + 1;
-  var message = {
-    seq: self.messagePool.sequence,
-    device: device,
-    msgId : msgId,
-    payload: payload,
-    timeout: timeout,
-    timeoutHandler: undefined
-  };
+  return new Promise(function(resolve) {
+    _.each(self.devices, function(device) {
+      device.init().then(function(response) { 
+        deviceCount = deviceCount - 1;
 
-  if (!message.timeout) {
-    message.timeout = self.requestTiemout;
-  }
+        if (response === 'done') {
+          self.statistics.init.done = self.statistics.init.done + 1;
+          self.logTrace('Device[', device.id, '] connection is completed.');
+        }
+        if (response === 'timeout') {
+          self.statistics.init.timeout = self.statistics.init.timeout + 1;
+          self.logTrace('Device[', device.id, '] connection failed.');
+        }
 
-  self.logTrace('Push to the fast queue');
-  self.messagePool.fastQueue.push(message);
+        var ratio = self.statistics.init.done * 100.0 / self.devices.length;
+        self.logTrace('initialization Ratio [', self.statistics.init.done, ',', self.statistics.init.timeout, ',', ratio.toFixed(2), '% ]');
 
-  return  message.seq;
+        if (deviceCount === 0) {
+          resolve('done');
+        }
+      });
+    });
+  });
 };
 
-MeltemCVSMaster.prototype.sendMessage = function (device, msgId, payload, timeout) {
-  var self = this;
+MeltemCVSMaster.prototype.updateDevices = function(timeout) {
+  var self =this;
 
-  self.messagePool.sequence = self.messagePool.sequence + 1;
-  var message = {
-    seq: self.messagePool.sequence,
-    device: device,
-    msgId : msgId,
-    payload: payload,
-    timeout: timeout,
-    timeoutHandler: undefined
-  };
+  return  new Promise(function(resolve) {
+    var updateCount = self.devices.length;
+    var stopUpdate = false;
 
-  if (!message.timeout) {
-    message.timeout = self.requestTiemout;
-  }
+    var timeoutHandler = setTimeout(function() {
+      stopUpdate = true;
+    }, timeout);
 
-  self.messagePool.queue.push(message);
-
-  return  message.seq;
+    self.logTrace('Set update timeout :', timeout);
+    _.each(self.devices, function(device) {
+      if (!self.stop) {
+        if (!device.isInitialized()) {
+          device.init().then(function(result){
+            if (result === 'done') {
+              self.statistics.init.done = self.statistics.init.done + 1;
+              self.statistics.init.timeout = self.statistics.init.timeout - 1;
+            }
+            
+            updateCount = updateCount - 1;
+            if (updateCount === 0) {
+              clearTimeout(timeoutHandler);
+              self.logTrace('Update all devices!');
+              self.showStatistics();
+              resolve('done');
+            }
+            else if (stopUpdate){
+              self.logError('Update timeout!');
+              resolve('timeout');
+            }
+          });
+        }
+        else {
+          device.update().then(function(){
+            updateCount = updateCount - 1;
+            if (updateCount === 0) {
+              clearTimeout(timeoutHandler);
+              self.logTrace('Update all devices!');
+              self.showStatistics();
+              resolve('done');
+            }
+            else if (stopUpdate){
+              self.logError('Update timeout!');
+              resolve('timeout');
+            }
+          });
+        }
+      }
+    });
+  });
 };
 
-MeltemCVSMaster.prototype.doneMessage = function(seq) {
+MeltemCVSMaster.prototype.showStatistics = function() {
   var self = this;
 
-  if (self.messagePool.current) {
-    if (self.messagePool.current.seq === seq) {
-      clearTimeout(self.messagePool.current.timeoutHandler); 
-      self.messagePool.current = undefined;
+  self.logTrace('[STATICTICS]');
+
+  self.logTrace('Initialization');
+  self.logTrace('Done :', self.statistics.init.done);
+
+  _.each(self.devices, function(device) {
+    var statistics = device.getStatistics();
+
+    var failureRatio = statistics.update.failure * 100.0 / statistics.update.total;
+    self.logTrace(device.id, ',', statistics.update.total, ',', 
+      (statistics.update.total - statistics.update.failure), ',', 
+      statistics.update.failure, ',', 
+      failureRatio.toFixed(2), '%,',  
+      Math.trunc(statistics.responseTime.average));
+  });
+};
+
+MeltemCVSMaster.prototype.fastRequest = function (device, request) {
+  var self = this;
+
+  request.device = device;
+  self.requestPool.fastQueue.push(request);
+};
+
+MeltemCVSMaster.prototype.sendRequest = function (device, request) {
+  var self = this;
+
+  request.device = device;
+  self.requestPool.queue.push(request);
+};
+
+MeltemCVSMaster.prototype.doneMessage = function(requestId, messageId) {
+  var self = this;
+
+  if (self.requestPool.current) {
+    var request  = self.requestPool.current;
+    if ((request.id === requestId) && request.current) {
+      if (request.current.id === messageId) {
+        clearTimeout(request.current.timeoutHandler); 
+        request.current = undefined;
+      }
     }
   }
 };
 
-MeltemCVSMaster.prototype.cancelMessage = function(seq) {
+MeltemCVSMaster.prototype.cancelRequest = function(requestId) {
   var self = this;
 
-  if (self.messagePool.current) {
-    if (self.messagePool.current.seq === seq) {
-      clearTimeout(self.messagePool.current.timeoutHandler); 
-      self.messagePool.current = undefined;
+  if (self.requestPool.current) {
+    var request  = self.requestPool.current;
+    if (request.id === requestId){
+      self.requestPool.current = undefined;
     }
   }
 };
@@ -448,8 +602,23 @@ MeltemCVSMaster.prototype.getID = function() {
   return  self.config.id;
 };
 
-MeltemCVSMaster.prototype.getUpdateInterval = function() {
+MeltemCVSMaster.prototype.getUpdateInterval = function(renew) {
   var self = this;
+
+  if (renew) {
+    var newInterval = self.config.loopIntervalMin;
+
+    _.each(self.devices, function(device){
+      if (device.isInitialized()) {
+        newInterval = newInterval + device.getRequestTimeout();
+      }
+      else {
+        newInterval = newInterval + device.getInitTimeout();
+      }
+    });
+
+    self.config.loopInterval = newInterval;
+  }
 
   return  self.config.loopInterval;
 };
