@@ -7,14 +7,14 @@ var EventEmitter = require('events').EventEmitter;
 var logger = require('./index').Sensor.getLogger('Sensor');
 
 var STEP_TABLE = [
-  { 'name' : 'S1', 'step' : 0},
-  { 'name' : 'T1', 'step' : 1},
-  { 'name' : 'T2', 'step' : 2},
-  { 'name' : 'T3', 'step' : 3},
-  { 'name' : 'R1', 'step' : 4},
-  { 'name' : 'R2', 'step' : 5},
-  { 'name' : 'R3', 'step' : 6},
-  { 'name' : 'F1', 'step' : 7}
+  { 'name' : 'R1', 'step' : 1},
+  { 'name' : 'R2', 'step' : 2},
+  { 'name' : 'R3', 'step' : 3},
+  { 'name' : 'S1', 'step' : 4},
+  { 'name' : 'T1', 'step' : 4},
+  { 'name' : 'T2', 'step' : 4},
+  { 'name' : 'T3', 'step' : 4},
+  { 'name' : 'F1', 'step' : 4}
 ];
 
 var DEFAULT_SETTINGS = {
@@ -55,7 +55,7 @@ var DEFAULT_SETTINGS = {
 function valueToString (setting, value) {
   var   s;
 
-  if (!value) {
+  if (value === undefined) {
     value = setting.value;
   }
   else if (value < setting.min) {
@@ -83,11 +83,12 @@ function MeltemCVSDevice(master, id) {
   self.id = id;
   self.master = master;
   self.requestTimeout = 5000;
+  self.connectionTimeout = 1800000;
   self.requestPool = {
     fastQueue: [],
     queue: []
   };
-  self.groupStatus = [{
+  self.group = [{
       initialized: false ,
       fields: [ 's01', 's02', 's03', 's04', 's05', 's06', 's07', 's08', 's09', 's10', 's11', 's12' ] 
     },{
@@ -101,6 +102,7 @@ function MeltemCVSDevice(master, id) {
 
   self.statistics = {
     update: {
+      last: false,
       total: 0,
       failure: 0
     },
@@ -140,17 +142,18 @@ function MeltemCVSDevice(master, id) {
         var pressure = parseInt(data.substr(10, 4));
         var rpm = parseInt(data.substr(14, 4));
         var current = parseInt(data.substr(18, 4));
-        var power = current*24/1000;
+        var power = current*440/1000;
         var temperature = parseInt(data.substr(24, 4));
         var operatingTime = parseInt(data.substr(28, 5));
 
-        self.master.emit(self.id + '-mode', { sequence: 'mode', value: stepObject.step });
-        self.master.emit(self.id + '-pressure', { sequence: 'pressure', value: pressure });
-        self.master.emit(self.id + '-rpm', { sequence: 'rpm', value: rpm });
-        self.master.emit(self.id + '-current', { sequence: 'current', value: current });
-        self.master.emit(self.id + '-power', { sequence: 'power', value: power });
-        self.master.emit(self.id + '-temperature', { sequence: 'temperature', value: temperature });
-        self.master.emit(self.id + '-operating_time', { sequence: 'operating_time', value: operatingTime});
+        var date = new Date();
+        self.master.emit(self.id + '-mode', { value: stepObject.step, time:  date.getTime() });
+        self.master.emit(self.id + '-pressure', { value: pressure, time: date.getTime() });
+        self.master.emit(self.id + '-rpm', { value: rpm, time: date.getTime() });
+        self.master.emit(self.id + '-current', { value: current, time: date.getTime() });
+        self.master.emit(self.id + '-power', { value: power, time: date.getTime() });
+        self.master.emit(self.id + '-temperature', { value: temperature, time: date.getTime() });
+        self.master.emit(self.id + '-operating_time', { value: operatingTime, time: date.getTime() });
 
         return  'done';
       }
@@ -196,8 +199,6 @@ function MeltemCVSDevice(master, id) {
       }
     },
     D70: function(data) {
-      self.logTrace('View test setting.');
-     
       try {
         if (!_.isString(data) || data.length !== 43) {
           throw new Error('Invalid Data : ' + data);
@@ -223,7 +224,7 @@ function MeltemCVSDevice(master, id) {
           throw new Error('Invalid Data : ' + data);
         }
 
-        _.each(self.getDefaultSettings[0].fields, function(name, i) {
+        _.each(self.group[0].fields, function(name, i) {
           self.settings[name].value = parseInt(data.substr(10 + i * 4, 4));
         });
 
@@ -307,11 +308,9 @@ function MeltemCVSDevice(master, id) {
 
   EventEmitter.call(self);
 
-  self.logTrace('Device :', self);
-
   self.on('data', function(data) {
     try{
-      self.logTrace('onData :', data);
+      self.logTrace(data);
 
       if ((!self.requestPool.current) || (data.length < 11)) {
         throw new Error('Invalid Data');
@@ -339,27 +338,86 @@ function MeltemCVSDevice(master, id) {
     try {
       result.cmd = params.cmd;
 
-      if (!self.initialized) {
-        throw new Error('The device is not initialized.');
-      }
-
       self.logTrace('Device Control :', params);
       if (params.cmd === 'set') {
+        if (!self.initialized) {
+          throw new Error('The device is not initialized.');
+        }
+
         if (!params.settings) {
           throw new Error('The parameter is incorrect.');
         }
 
-        self.setSettings(params.settings, cb);
+        self.setSettings(params.settings).then(function(message) {
+          if (message === 'done') {
+            result.settings = {};
+
+            _.each(params.settings, function(value , key) {
+              if (self.settings[key]) {
+                result.settings[key] = { value: self.settings[key].value, min: self.settings[key].min, max: self.settings[key].max };
+              }
+            });
+
+            self.logTrace('Settings successfully done');
+            return  cb && cb(undefined, JSON.stringify(result));
+          }
+          else {
+            result.result = 'failed';
+            result.message = message;
+  
+            self.logTrace('Setting failed');
+            return  cb && cb(JSON.stringify(result), undefined);
+         }
+        });
       }
       else if (params.cmd === 'get') {
-        var settings = {};
-        _.each(self.getSettings(), function(setting, key) {
-          settings[key] = { value: setting.value, min: setting.min, max: setting.max };
+        self.getSettings().then(function(init) {
+          if (init === 'done')  {
+            var settings = {};
+            _.each(self.settings, function(setting, key) {
+              settings[key] = { value: setting.value, min: setting.min, max: setting.max };
+            });
+      
+            result.settings = settings;
+      
+            return cb && cb(undefined, JSON.stringify(result));
+          }
+          else {
+            result.result = 'failed';
+            result.message = init;
+      
+            if (cb) {
+              cb(undefined, JSON.stringify(result));
+            }
+          }
         });
-        self.logTrace('Request GET result :', result);
+      }
+      else if (params.cmd === 'ctrl') {
+        if (params.requestTimeout) {
+          if (1000 > params.requestTimeout) {
+            throw new Error('Request timeout is too short( > 1000 ms).');
+          }
 
-        result.result = { settings: settings};
-        return cb && cb(undefined, JSON.stringify(result));
+          self.requestTimeout = params.requestTimeout;
+          result.requestTimeout = self.requestTimeout;
+          result.result = 'success';
+        }
+
+        if (params.connectionTimeout) {
+          if (self.requestTiemout * 2 > params.connectionTimeout) {
+            throw new Error('Timeout is too short.');
+          }
+
+          self.connectionTimeout = params.connectionTimeout;
+          result.connectionTimeout= self.connectionTimeout;
+          result.result = 'success';
+        }
+
+        if (result.result === undefined) {
+          throw new Error('Invalid parameter.');
+        }
+
+        return cb && cb(JSON.stringify(result));
       }
       else if (params.cmd === 'reset') {
         self.factoryReset(cb);
@@ -367,14 +425,13 @@ function MeltemCVSDevice(master, id) {
       else {
         throw new Error('This command is not supported.');
       }
-
     }
     catch(e) {
       result.result = 'failed';
       result.message = e.message;
       return cb && cb(JSON.stringify(result));
     }
-  });
+ });
  
   self.on('waitDone', function(request) {
     try{
@@ -451,7 +508,7 @@ MeltemCVSDevice.prototype.logError = function() {
 
   if (self.log.error) {
     var i;
-    var message = '[' + self.constructor.name + ']';
+    var message = self.master.getID() + '-' + self.id + ' :';
 
     for(i = 0 ; i < arguments.length ; i++) {
       if (_.isObject(arguments[i])) {
@@ -471,7 +528,7 @@ MeltemCVSDevice.prototype.logTrace = function() {
 
   if (self.log.trace) {
     var i;
-    var message = '[' + self.constructor.name + ']';
+    var message = self.master.getID() + '-' + self.id + ' :';
 
     for(i = 0 ; i < arguments.length ; i++) {
       if (_.isObject(arguments[i])) {
@@ -493,23 +550,27 @@ MeltemCVSDevice.prototype.isInitialized = function() {
 };
 
 MeltemCVSDevice.prototype.getDefaultSettings = function() {
-  var settings = {};
+  var self = this;
+  var settings = _.cloneDeep(DEFAULT_SETTINGS);
 
   try{
     _.each(DEFAULT_SETTINGS, function(setting, name) {
       settings[name] = _.clone(setting);
-      if (CONFIG.meltem.config[name]) {
-        if (CONFIG.meltem.config[name].min) {
-          settings[name].min = CONFIG.meltem.config[name].min;
-        }
-
-        if (CONFIG.meltem.config[name].max) {
-          settings[name].max = CONFIG.meltem.config[name].max;
+      if (CONFIG.meltem && CONFIG.meltem.config) {
+        if (CONFIG.meltem.config[name]) {
+          if (CONFIG.meltem.config[name].min) {
+            settings[name].min = CONFIG.meltem.config[name].min;
+          }
+  
+          if (CONFIG.meltem.config[name].max) {
+            settings[name].max = CONFIG.meltem.config[name].max;
+          }
         }
       }
     });
   }
   catch(e) {
+    self.logError(e);
   }
 
   return  settings;
@@ -531,6 +592,11 @@ MeltemCVSDevice.prototype.getInitTimeout = function() {
 
   return  timeout;
 };
+MeltemCVSDevice.prototype.getConnectionTimeout = function() {
+  var self = this;
+
+  return  self.connectionTimeout;
+};
 
 MeltemCVSDevice.prototype.getRequestTimeout = function() {
   var   self = this;
@@ -538,12 +604,18 @@ MeltemCVSDevice.prototype.getRequestTimeout = function() {
   return  self.requestTimeout;
 };
 
+MeltemCVSDevice.prototype.didLastUpdateSucceed = function() {
+  var self = this;
+
+  return  self.statistics.update.last;
+};
+
 MeltemCVSDevice.prototype.init = function () {
   var self = this;
 
   return new Promise(function(resolve) {
     var messages = [];
-  
+
     if (!self.group[0].initialized) {
       messages.push({
         type: 'cmd',
@@ -590,10 +662,12 @@ MeltemCVSDevice.prototype.update = function () {
 
     self.sendRequest([ { type: 'cmd', name: 'D00', payload: 'D00' }],
       function () {
+        self.statistics.update.last = true;
         self.logTrace('Device[', self.id, '] state updated');
         resolve('done');
       },
       function() {
+        self.statistics.update.last = false;
         self.statistics.update.failure = self.statistics.update.failure + 1;
         var failureRatio = self.statistics.update.failure * 100.0 / self.statistics.update.total;
 
@@ -666,7 +740,7 @@ MeltemCVSDevice.prototype.updateRequestStatistics = function(result) {
 MeltemCVSDevice.prototype.responseCB = function(data) {
   var self = this;
   try{
-    self.logTrace('onData :', data);
+    self.logTrace(data);
 
     if ((!self.requestPool.current) || (data.length < 11)) {
       throw new Error('Invalid Data');
@@ -689,44 +763,27 @@ MeltemCVSDevice.prototype.responseCB = function(data) {
 };
 
 MeltemCVSDevice.prototype.isSettings1 = function(settings) {
-  return  ( settings.s01 || 
-            settings.s02 ||
-            settings.s03 ||
-            settings.s04 ||
-            settings.s05 ||
-            settings.s06 ||
-            settings.s07 ||
-            settings.s08 ||
-            settings.s09 ||
-            settings.s10 ||
-            settings.s11 ||
-            settings.s12);
+  var self = this;
+
+  return _.find(self.group[0].fields, function(name){
+    return  settings[name] !== undefined;
+  }) !== undefined;
 };
 
 MeltemCVSDevice.prototype.isSettings2 = function(settings) {
-  return  ( settings.s13 ||
-            settings.s14 ||
-            settings.s15 ||
-            settings.s16 ||
-            settings.s17 ||
-            settings.s18 ||
-            settings.s19 ||
-            settings.s20 ||
-            settings.s21 ||
-            settings.s22 ||
-            settings.s23 ||
-            settings.s24);
+  var self = this;
+
+  return _.find(self.group[1].fields, function(name){
+    return  settings[name] !== undefined;
+  }) !== undefined;
 };
 
 MeltemCVSDevice.prototype.isSettingsTest = function(settings) {
-  return  ( settings.set1Rpm ||
-            settings.set1Current ||
-            settings.set2Rpm ||
-            settings.set2Current ||
-            settings.set3Rpm ||
-            settings.set3Current ||
-            settings.set3OpenRpm ||
-            settings.set3OpenCurrent);
+  var self = this;
+
+  return _.find(self.group[2].fields, function(name){
+    return  settings[name] !== undefined;
+  }) !== undefined;
 };
 
 MeltemCVSDevice.prototype.setSettings1 = function (settings, resultCB) {
@@ -742,14 +799,14 @@ MeltemCVSDevice.prototype.setSettings1 = function (settings, resultCB) {
 
     self.sendRequest([{ type: 'cmd', name: 'S60', payload: payload }],
       function () {
-        var result = { reuslt: 'success'};
+        var result = { result: 'success'};
 
         self.logTrace('Settings successfully done');
         resolve('done');
         resultCB(undefined, JSON.stringify(result));
       },
       function() {
-        var result = { cmd: 'set', reuslt: 'failed', message: 'timeout'};
+        var result = { cmd: 'set', result: 'failed', message: 'timeout'};
 
         self.logTrace('Setting failed');
         resolve('timeout');
@@ -772,14 +829,14 @@ MeltemCVSDevice.prototype.setSettings2 = function (settings, resultCB) {
 
     self.sendRequest([{ type: 'cmd', name: 'S61', payload: payload}],
       function () {
-        var result = { reuslt: 'success'};
+        var result = { result: 'success'};
 
         self.logTrace('Settings successfully done');
         resolve('done');
         resultCB(undefined, JSON.stringify(result));
       },
       function() {
-        var result = { cmd: 'set', reuslt: 'failed', message: 'timeout'};
+        var result = { cmd: 'set', result: 'failed', message: 'timeout'};
 
         self.logTrace('Setting failed');
         resolve('timeout');
@@ -802,14 +859,14 @@ MeltemCVSDevice.prototype.setSettingsTest = function (settings, resultCB) {
 
     self.sendRequest([{ type: 'cmd', name: 'S70', payload: payload }],
       function () {
-        var result = { reuslt: 'success'};
+        var result = { result: 'success'};
 
         self.logTrace('Settings successfully done');
         resolve('done');
         resultCB(undefined, JSON.stringify(result));
       },
       function() {
-        var result = { cmd: 'set', reuslt: 'failed', message: 'timeout'};
+        var result = { cmd: 'set', result: 'failed', message: 'timeout'};
 
         self.logTrace('Setting failed');
         resolve('timeout');
@@ -835,14 +892,14 @@ MeltemCVSDevice.prototype.reset = function (resultCB) {
         time: 5000
       }],
       function () {
-        var result = { reuslt: 'success'};
+        var result = { result: 'success'};
 
         self.logTrace('Reset successfully done');
         resolve('done');
         resultCB(undefined, JSON.stringify(result));
       },
       function() {
-        var result = { cmd: 'reset', reuslt: 'failed', message: 'timeout'};
+        var result = { cmd: 'reset', result: 'failed', message: 'timeout'};
 
         self.logTrace('Reset failed');
         resolve('timeout');
@@ -852,12 +909,12 @@ MeltemCVSDevice.prototype.reset = function (resultCB) {
   });
 };
 
-MeltemCVSDevice.prototype.setSettings = function (settings, resultCB) {
+MeltemCVSDevice.prototype.setSettings = function (settings) {
   var self = this;
 
   self.logTrace('setSettings :', JSON.stringify(settings));
-  if (self.isSettings1(settings) || self.isSettings2(settings) || self.isSettingsTest(settings)){
-    return new Promise(function(resolve) {
+  return new Promise(function(resolve) {
+    if (self.isSettings1(settings) || self.isSettings2(settings) || self.isSettingsTest(settings)){
       var messages = [];
       var payload;
 
@@ -909,43 +966,73 @@ MeltemCVSDevice.prototype.setSettings = function (settings, resultCB) {
 
         messages.push({
           type: 'cmd',
-          name: 'S70',
+          name: 'P00',
           payload: payload
         });
       }
 
       self.fastRequest(messages,
         function () {
-          var result = { cmd: 'set', result: { settings : {}}};
-
-          _.each(settings, function(value , key) {
-            if (self.settings[key]) {
-              result.result.settings[key] = { value: self.settings[key].value, min: self.settings[key].min, max: self.settings[key].max };
-            }
-          });
-
-          self.logTrace('Settings successfully done');
           resolve('done');
-          resultCB(undefined, JSON.stringify(result));
         },
         function() {
-          var result = { cmd: 'set', result: 'failed', message: 'timeout'};
-  
-          self.logTrace('Setting failed');
           resolve('timeout');
-          resultCB(JSON.stringify(result), undefined);
         }
       );
-    });
-  }
-
-  return undefined;
+    }
+    else {
+      resolve('done');
+    }
+  });
 };
 
 MeltemCVSDevice.prototype.getSettings = function() {
   var self = this;
 
-  return  _.cloneDeep(self.settings);
+  return  new Promise(function(resolve) {
+    var messages = [];
+  
+    if (!self.group[0].initialized) {
+      messages.push({
+        type: 'cmd',
+        name: 'D60',
+        payload: 'D60'
+      });
+    }
+  
+    if (!self.group[1].initialized) {
+      messages.push({
+        type: 'cmd',
+        name: 'D61',
+        payload: 'D61'
+      });
+    }
+  
+    if (!self.group[2].initialized) {
+      messages.push({
+        type: 'cmd',
+        name: 'D70',
+        payload: 'D70'
+      });
+    }
+   
+    if (messages.length !== 0) {
+      self.fastRequest(messages,
+        function () {
+          self.initialized = true;
+          self.logTrace('Device[', self.id, '] Initalized done.');
+          resolve('done');
+        },
+        function() {
+          self.logTrace('Device[', self.id, '] initialization failed. Response timed out.');
+          resolve('timeout');
+        }
+      );
+    }
+    else {
+      resolve('done');
+    }
+  });
 };
 
 MeltemCVSDevice.prototype.getStatistics = function() {
@@ -1008,6 +1095,7 @@ MeltemCVSDevice.prototype.fastRequest = function(messages, successCB, timeoutCB)
       type: 'done'
     });
 
+  self.logTrace('Fast Request called[', self.requestPool.fastQueue.length, ']');
     self.requestPool.fastQueue.push(request);
   }
   catch(e) {

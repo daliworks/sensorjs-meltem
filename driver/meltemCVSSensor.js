@@ -15,21 +15,21 @@ function MeltemCVSSensor(sensorInfo, options) {
   self.deviceAddress = self.id.split('-')[1];
   self.gatewayId = self.id.split('-')[0];
   self.lastTime = 0;
+  self.lastValue = 0;
   self.dataArray = [];
+  self.realtimeNotification = true;
 
   if (sensorInfo.model) {
     self.model = sensorInfo.model;
   }
 
   self.dataType = MeltemCVSSensor.properties.dataTypes[self.model][0];
-  self.isNotification = true;
 
-  self.master = meltem.create();
+  self.master = meltem.create(self.gatewayId);
 
   try {
-    self.master.addDevice(self.deviceAddress);
+    self.device = self.master.addDevice(self.deviceAddress);
 
-    logger.trace('Add Message : ', self.deviceAddress + '-' + self.sequence);
     self.master.on(self.deviceAddress + '-' + self.sequence, function onData(data) {
       var result = {
         status: 'on',
@@ -38,21 +38,27 @@ function MeltemCVSSensor(sensorInfo, options) {
         time: {}
       };
 
-      logger.trace('Data : ', data);
+      logger.trace(self.id, ':', data);
 
-      result.result[self.dataType] = self.lastValue = data.value;
-      result.time[self.dataType] = self.lastTime = new Date().getTime();
-
-      if (self.isNotification) {
-        self.emit('data', result);
+      if ((self.sequence === 'pressure') && (data.value === 0)) {
+        result.result[self.dataType] = self.lastValue;
       }
-      else{
+      else {
+        result.result[self.dataType] = self.lastValue = data.value;
+      }
+      result.time[self.dataType] = self.lastTime = data.time;
+
+      if (self.realtimeNotification) {
+        self.emit('change', result);
+      }
+      else {
         self.dataArray.push(result);
       }
     });
+    logger.trace(self.id, ': installed');
   }
   catch(err)  {
-    logger.debug('[Meltem CVS] Exception occurred :', err);
+    logger.debug(self.id, ': Exception occurred -', err);
   }
 }
 
@@ -62,7 +68,7 @@ MeltemCVSSensor.properties = {
     meltemCVSMode: ['state'],
     meltemCVSRPM: ['rpm'],
     meltemCVSCurrent: ['current'],
-    meltemCVSPower: ['power'],
+    meltemCVSPower: ['electricPower'],
     meltemCVSPressure: ['pressure'],
     meltemCVSTemperature: ['temperature'],
     meltemCVSOperatingTime: ['number']
@@ -78,10 +84,18 @@ MeltemCVSSensor.properties = {
   ],
   discoverable: false,
   addressable: true,
-  recommendedInterval: 60000,
   maxInstances: 99,
   maxRetries: 8,
   idTemplate: '{gatewayId}-{deviceAddress}-{sequence}',
+  onChange: {
+    'meltemCVSMode': false,
+    'meltemCVSRPM' : true,
+    'meltemCVSCurrent' : true,
+    'meltemCVSPower' : true,
+    'meltemCVSPressure' : true,
+    'meltemCVSOperatingTime' : true,
+    'meltemCVSTemperature' : true
+  },
   category: 'sensor'
 };
 
@@ -90,46 +104,26 @@ util.inherits(MeltemCVSSensor, Sensor);
 MeltemCVSSensor.prototype._get = function (cb) {
   var self = this;
   var result = {
-    status: 'on',
+    status: 'off',
     id: self.id,
     result: {},
     time: {}
   };
 
-  //if (self.isNotification && self.master)
-  //{
-    //self.master.sendMessage(self.id.split('-')[1], 'D00');
-  //}
-  //else
-  {
-    if (new Date().getTime() - self.lastTime > self.properties.recommendedInterval * 1.5) {
-      result.status = 'error';
-      result.message = 'No data';
-      if (cb) {
-        return cb(new Error('no data'), result);
-      } else {
-        self.emit('data', result);
-        return;
-      }
-    }
+  var elapsedTime = new Date().getTime() - self.lastTime;
 
-    if (self.dataArray.length) {
-      result.result[self.dataType] = self.lastValue;
-      result.time[self.dataType] = self.lastTime;
-      self.dataArray = [];
-    }
-    else {
-      result.time[self.dataType] = self.lastTime;
-    }
+  if (elapsedTime <= self.device.getConnectionTimeout()){
+    logger.trace(self.id, 'The last data transmission time interval - [', elapsedTime, 'ms ]') ;
+    result.status = 'on';
+    result.result[self.dataType] = self.lastValue;
+    result.time[self.dataType] = self.lastTime;
+    self.dataArray = [];
+  }
+  else {
+    logger.info(self.id, 'The device did not respond.') ;
   }
 
-  logger.debug('Data get:', self.id, result);
-
-  if (cb) {
-    return cb(null, result);
-  } else {
-    self.emit('data', result);
-  }
+  return  cb && cb(null, result);
 };
 
 MeltemCVSSensor.prototype._enableChange = function () {

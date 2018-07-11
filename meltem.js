@@ -27,8 +27,14 @@ var serialOpts = {
 var masters = [];
 
 // TODO: If opening port takes long time, async function cannot be finished.
-function MeltemCVSMaster (port) {
+function MeltemCVSMaster (id, port) {
   var self = this;
+
+  self.id = id;
+  self.config = {
+    masterId: MELTEM_CVS_MASTER_ID,
+    initializationFirst: true
+  };
 
   self.serialPorts = [];
   self.listeners = [];
@@ -53,11 +59,10 @@ function MeltemCVSMaster (port) {
   };
   self.stop = true;
   self.port = port;
-  self.logTrace('Create new instance :', port);
 
   self.loadConfig(CONFIG);
 
-  self.logTrace('ID :', self.getID());
+  self.logTrace('Create new instance :', self.getMasterID());
 
   EventEmitter.call(self);
 
@@ -75,9 +80,14 @@ function MeltemCVSMaster (port) {
 
     self.stop = false;
     self.logInfo('Connected');
-    self.initDevices().then(function() {
+    if (self.config.initializationFirst) {
+      self.initDevices().then(function() {
+        self.emit('update');
+      });
+    }
+    else {
       self.emit('update');
-    });
+    }
   });
 
   self.on('disconnect', function() {
@@ -110,7 +120,7 @@ function MeltemCVSMaster (port) {
       var deviceId = payload.substr(4, 3);
       var cmd      = payload.substr(7, 3);
    
-      if (masterId !== self.getID()) {
+      if (masterId !== self.getMasterID()) {
         throw new Error('Invalid MasterID[' + masterId + ']');
       }
   
@@ -153,6 +163,12 @@ function MeltemCVSMaster (port) {
       self.requestPool.current = self.requestPool.fastQueue.shift();
       if (!self.requestPool.current) {
         self.requestPool.current = self.requestPool.queue.shift();
+        if (self.requestPool.current){
+          self.logTrace('Get normal request');
+        }
+      }
+      else {
+        self.logTrace('Get fast request');
       }
     } 
     if (self.requestPool.current) {
@@ -163,8 +179,8 @@ function MeltemCVSMaster (port) {
         if (message) {
           if (message.type === 'cmd') {
             var date = new Date();
-            var payload = '<' + request.device.id + self.getID() + message.payload + '>';
-            self.logTrace('Send :', payload);
+            var payload = '<' + request.device.id + self.getMasterID() + message.payload + '>';
+            self.logTrace(payload);
             message.requestTime = date.getTime();
 
             _.each(self.listeners, function(listener){
@@ -220,7 +236,7 @@ MeltemCVSMaster.prototype.logError = function() {
 
   if (self.log.error) {
     var i;
-    var message = '[' + self.constructor.name + ']';
+    var message = self.id + ' :';
 
     for(i = 0 ; i < arguments.length ; i++) {
       if (_.isObject(arguments[i])) {
@@ -240,7 +256,7 @@ MeltemCVSMaster.prototype.logTrace = function() {
 
   if (self.log.trace) {
     var i;
-    var message = '[' + self.constructor.name + ']';
+    var message = self.id + ' :';
 
     for(i = 0 ; i < arguments.length ; i++) {
       if (_.isObject(arguments[i])) {
@@ -258,13 +274,11 @@ MeltemCVSMaster.prototype.logTrace = function() {
 MeltemCVSMaster.prototype.loadConfig = function(CONFIG) {
   var self = this;
 
-  self.config = {};
-
   try {
-    self.config.id = CONFIG.meltem.master.id || MELTEM_CVS_MASTER_ID;
+    self.config.masterId = CONFIG.meltem.master.id || MELTEM_CVS_MASTER_ID;
   }
   catch(e) {
-    self.config.id = MELTEM_CVS_MASTER_ID;
+    self.config.masterId = MELTEM_CVS_MASTER_ID;
   }
 
   try {
@@ -490,49 +504,62 @@ MeltemCVSMaster.prototype.updateDevices = function(timeout) {
   return  new Promise(function(resolve) {
     var updateCount = self.devices.length;
     var stopUpdate = false;
+    var timeoutList=[];
+    var startTime = new Date().getTime();
 
     var timeoutHandler = setTimeout(function() {
       stopUpdate = true;
     }, timeout);
 
     self.logTrace('Set update timeout :', timeout);
+
     _.each(self.devices, function(device) {
       if (!self.stop) {
-        if (!device.isInitialized()) {
-          device.init().then(function(result){
-            if (result === 'done') {
-              self.statistics.init.done = self.statistics.init.done + 1;
-              self.statistics.init.timeout = self.statistics.init.timeout - 1;
+        device.update().then(function(result){
+          if (result !== 'done') {
+            timeoutList.push(device);
+          }
+
+          updateCount = updateCount - 1;
+          if (updateCount === 0) {
+            clearTimeout(timeoutHandler);
+            var elapsedTime = new Date().getTime() - startTime;
+
+            if ((elapsedTime < timeout) && (timeoutList.length !== 0)) {
+              var retryDeviceCount = timeoutList.length;
+              var retryTimeoutHandler = setTimeout(function() {
+                stopUpdate = true;
+              }, timeout - elapsedTime);
+  
+              _.each(timeoutList, function(device) {
+                if (!self.stop) {
+                  device.update().then(function(result) {
+                    if (result !== 'done') {
+                      self.logTrace('Device[', device.id, '] update retry failed.');
+                    }
+
+                    retryDeviceCount = retryDeviceCount - 1;
+                    if (retryDeviceCount === 0) {
+                      clearTimeout(retryTimeoutHandler);
+                      self.logTrace('Update all devices!');
+                      self.showStatistics();
+                      resolve('done');
+                    }
+                  });
+                }
+              });
             }
-            
-            updateCount = updateCount - 1;
-            if (updateCount === 0) {
-              clearTimeout(timeoutHandler);
+            else {
               self.logTrace('Update all devices!');
               self.showStatistics();
               resolve('done');
             }
-            else if (stopUpdate){
-              self.logError('Update timeout!');
-              resolve('timeout');
-            }
-          });
-        }
-        else {
-          device.update().then(function(){
-            updateCount = updateCount - 1;
-            if (updateCount === 0) {
-              clearTimeout(timeoutHandler);
-              self.logTrace('Update all devices!');
-              self.showStatistics();
-              resolve('done');
-            }
-            else if (stopUpdate){
-              self.logError('Update timeout!');
-              resolve('timeout');
-            }
-          });
-        }
+          }
+          else if (stopUpdate){
+            self.logError('Update timeout!');
+            resolve('timeout');
+          }
+        });
       }
     });
   });
@@ -554,7 +581,9 @@ MeltemCVSMaster.prototype.showStatistics = function() {
       (statistics.update.total - statistics.update.failure), ',', 
       statistics.update.failure, ',', 
       failureRatio.toFixed(2), '%,',  
-      Math.trunc(statistics.responseTime.average));
+      Math.trunc(statistics.responseTime.average), ',',
+      statistics.responseTime.min, ',',
+      statistics.responseTime.max);
   });
 };
 
@@ -597,9 +626,14 @@ MeltemCVSMaster.prototype.cancelRequest = function(requestId) {
   }
 };
 
+MeltemCVSMaster.prototype.getMasterID = function() {
+  var self = this;
+  return  self.config.masterId;
+};
+
 MeltemCVSMaster.prototype.getID = function() {
   var self = this;
-  return  self.config.id;
+  return  self.id;
 };
 
 MeltemCVSMaster.prototype.getUpdateInterval = function(renew) {
@@ -629,32 +663,28 @@ MeltemCVSMaster.prototype.getRequestTimeout = function() {
   return  self.config.requestTimeout;
 };
 
-function CreateMaster(port) {
-  if (!port) {
-    port = MELTEM_CVS_MASTER_PORT;
-  }
-
+function CreateMaster(id) {
   var master = _.find(masters, function(master) {
-    return  master.port === port;
+    return  master.id === id;
   });
 
   if (!master) {
-    master = new MeltemCVSMaster(port);
+    master = new MeltemCVSMaster(id, MELTEM_CVS_MASTER_PORT);
     masters.push(master);
   }
 
   return  master;
 }
 
-function DestroyMaster(port) {
+function DestroyMaster(id) {
   masters = _.filer(masters, function(master) {
-    return  (master.port !== port);
+    return  (master.id !== id);
   });
 }
 
-function  GetMaster(port) {
+function  GetMaster(id) {
   return  _.find(masters, function(master) {
-      return  (master.port === port);
+      return  (master.id === id);
   });
 }
 

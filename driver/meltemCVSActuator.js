@@ -15,14 +15,15 @@ function MeltemCVSActuator(sensorInfo, options) {
   self.deviceAddress = self.id.split('-')[1];
   self.gatewayId = self.id.split('-')[0];
   self.lastTime = 0;
-  
+  self.myStatus = 'on';
+
   if (sensorInfo.model) {
     self.model = sensorInfo.model;
   }
 
   self.dataType = MeltemCVSActuator.properties.dataTypes[self.model][0];
   
-  self.master = meltem.create();
+  self.master = meltem.create(self.gatewayId);
 
   try {
     self.device = self.master.addDevice(self.deviceAddress);
@@ -57,6 +58,16 @@ MeltemCVSActuator.properties = {
 
 util.inherits(MeltemCVSActuator, Actuator);
 
+MeltemCVSActuator.prototype._get = function (cb) {
+  var self = this;
+  var result = {
+    status: 'on',
+    id: self.id
+  };
+
+  return  cb && cb(null, result);
+};
+
 MeltemCVSActuator.prototype._set = function (cmd, options, cb) {
   var self = this;
 
@@ -78,22 +89,28 @@ MeltemCVSActuator.prototype._set = function (cmd, options, cb) {
 };
 
 MeltemCVSActuator.prototype.getStatus = function () {
-  return this.myStatus;
+  var self = this;
+
+  return self.myStatus;
 };
 
 MeltemCVSActuator.prototype.connectListener = function () {
-  this.myStatus = 'on';
+  var self = this;
+
+  self.myStatus = 'on';
 };
 
 MeltemCVSActuator.prototype.disconnectListener = function () {
+  var self = this;
+
   var rtn = {
     status: 'off',
-    id: this.id,
+    id: self.id,
     message: 'disconnected'
   };
 
-  this.myStatus = 'off';
-  this.emit('data', rtn);
+  self.myStatus = 'off';
+  self.emit('data', rtn);
 };
 
 module.exports = MeltemCVSActuator;
