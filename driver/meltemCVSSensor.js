@@ -14,45 +14,44 @@ function MeltemCVSSensor(sensorInfo, options) {
   self.sequence = self.id.split('-')[2];
   self.deviceAddress = self.id.split('-')[1];
   self.gatewayId = self.id.split('-')[0];
-  self.lastTime = 0;
-  self.lastValue = 0;
+  self.lastData = { value: 0, time: 0};
   self.dataArray = [];
-  self.realtimeNotification = true;
 
   if (sensorInfo.model) {
     self.model = sensorInfo.model;
   }
 
   self.dataType = MeltemCVSSensor.properties.dataTypes[self.model][0];
-
+  self.onChange =  MeltemCVSSensor.properties.onChange[self.model];
   self.master = meltem.create(self.gatewayId);
 
   try {
     self.device = self.master.addDevice(self.deviceAddress);
 
     self.master.on(self.deviceAddress + '-' + self.sequence, function onData(data) {
-      var result = {
-        status: 'on',
-        id: self.id,
-        result: {},
-        time: {}
-      };
 
       logger.trace(self.id, ':', data);
 
-      if ((self.sequence === 'pressure') && (data.value === 0)) {
-        result.result[self.dataType] = self.lastValue;
+      if ((self.sequence !== 'pressure') || (data.value !== 0)) {
+        self.lastData.value = data.value;
       }
-      else {
-        result.result[self.dataType] = self.lastValue = data.value;
-      }
-      result.time[self.dataType] = self.lastTime = data.time;
+      self.lastData.time = data.time;
 
-      if (self.realtimeNotification) {
+      if (self.onChange) {
+        var result = {
+          status: 'on',
+          id: self.id,
+          result: {},
+          time: {}
+        };
+
+        result.result[self.dataType] = self.lastData.value;
+        result.time[self.dataType] = self.lastData.time;
+
         self.emit('change', result);
       }
       else {
-        self.dataArray.push(result);
+        self.dataArray.push(self.lastData);
       }
     });
     logger.trace(self.id, ': installed');
@@ -88,7 +87,7 @@ MeltemCVSSensor.properties = {
   maxRetries: 8,
   idTemplate: '{gatewayId}-{deviceAddress}-{sequence}',
   onChange: {
-    'meltemCVSMode': false,
+    'meltemCVSMode': true,
     'meltemCVSRPM' : true,
     'meltemCVSCurrent' : true,
     'meltemCVSPower' : true,
@@ -101,7 +100,7 @@ MeltemCVSSensor.properties = {
 
 util.inherits(MeltemCVSSensor, Sensor);
 
-MeltemCVSSensor.prototype._get = function (cb) {
+MeltemCVSSensor.prototype._get = function () {
   var self = this;
   var result = {
     status: 'off',
@@ -110,20 +109,30 @@ MeltemCVSSensor.prototype._get = function (cb) {
     time: {}
   };
 
-  var elapsedTime = new Date().getTime() - self.lastTime;
-
-  if (elapsedTime <= self.device.getConnectionTimeout()){
-    logger.trace(self.id, 'The last data transmission time interval - [', elapsedTime, 'ms ]') ;
-    result.status = 'on';
-    result.result[self.dataType] = self.lastValue;
-    result.time[self.dataType] = self.lastTime;
-    self.dataArray = [];
+  if (self.onChange) {
+    var elapsedTime = new Date().getTime() - self.lastData.time;
+  
+    if (elapsedTime <= self.device.getConnectionTimeout()){
+      logger.trace(self.id, 'The last data transmission time interval - [', elapsedTime, 'ms ]') ;
+      result.status = 'on';
+      result.result[self.dataType] = self.lastData.value;
+      result.time[self.dataType] = self.lastData.time;
+    }
   }
-  else {
+  else{
+    if (self.dataArray.length){
+      result.status = 'on';
+      result.result[self.dataType] = self.lastData.value;
+      result.time[self.dataType] = self.lastData.time;
+      self.dataArray = [];
+    }
+
+    self.emit('data', result); 
+  }
+
+  if (result.status === 'off') {
     logger.info(self.id, 'The device did not respond.') ;
   }
-
-  return  cb && cb(null, result);
 };
 
 MeltemCVSSensor.prototype._enableChange = function () {

@@ -39,6 +39,8 @@ function MeltemCVSMaster (id, port) {
   self.serialPorts = [];
   self.listeners = [];
   self.devices = [];
+  self.initializeFailedList = [];
+  self.updateFailedList = [];
   self.requestPool = {
     fastQueue: [],
     queue: [],
@@ -81,7 +83,8 @@ function MeltemCVSMaster (id, port) {
     self.stop = false;
     self.logInfo('Connected');
     if (self.config.initializationFirst) {
-      self.initDevices().then(function() {
+      self.initDevices(self.devices).then(function(initializeFailedList) {
+        self.initializeFailedList = initializeFailedList;
         self.emit('update');
       });
     }
@@ -106,10 +109,43 @@ function MeltemCVSMaster (id, port) {
 
     self.logTrace('update interval :', self.getUpdateInterval(), 'ms');
 
-    self.updateDevices(self.getUpdateInterval(true)).then(function() {
-      if (!self.stop) {
-        self.emit('update');
-      }
+    var  startTime = new Date().getTime();
+    var  timeout = self.getUpdateInterval(true);
+
+    self.updateDevices(self.devices).then(function(updateFailedList) {
+      var elapsedTime = new Date().getTime() - startTime;
+      var remainTime = timeout - elapsedTime;
+      var updateRetryList = [];
+
+      _.each(updateFailedList, function(device) {
+        if (device.getRequestTimeout() < remainTime ) {
+          updateRetryList.push(device);
+          remainTime = remainTime - device.getRequestTimeout();
+        }
+      });
+
+      self.logTrace('Retry Count :', updateRetryList.length);
+
+      self.updateDevices(updateRetryList).then(function() {
+        var elapsedTime = new Date().getTime() - startTime;
+        var remainTime = timeout - elapsedTime;
+        var initializeRetryList = [];
+
+        _.each(self.initializeFailedList, function(device) {
+          if (device.getInitTimeout() < remainTime ) {
+            initializeRetryList.push(device);
+          }
+        });
+
+        if (initializeRetryList.length) {
+          self.initDevices(initializeRetryList).then(function() {
+            self.emit('update');
+          });
+        }
+        else {
+          self.emit('update');
+        }
+      });
     });
   });
 
@@ -133,7 +169,7 @@ function MeltemCVSMaster (id, port) {
       if (request) {
         if (request.device !== device) {
           self.logTrace('Device[', deviceId, '] has received a delayed response.');
-          device.responseCB(payload);
+          device.responseCB(payload, true);
         }
         else {
           if (!request.current || request.current.name !== cmd) {
@@ -469,20 +505,26 @@ MeltemCVSMaster.prototype.getDevice = function(id) {
   });
 };
 
-MeltemCVSMaster.prototype.initDevices = function() {
+MeltemCVSMaster.prototype.initDevices = function(devices) {
   var self = this;
-  var deviceCount = self.devices.length;
+
+  if (!devices) {
+    devices = self.deivces;
+  }
+
+  var finishedDeviceCount = 0;
 
   return new Promise(function(resolve) {
-    _.each(self.devices, function(device) {
-      device.init().then(function(response) { 
-        deviceCount = deviceCount - 1;
+    var initializeFailedList = [];
 
+    _.each(devices, function(device) {
+      device.init().then(function(response) { 
         if (response === 'done') {
           self.statistics.init.done = self.statistics.init.done + 1;
           self.logTrace('Device[', device.id, '] connection is completed.');
         }
-        if (response === 'timeout') {
+        else {
+          initializeFailedList.push(device);
           self.statistics.init.timeout = self.statistics.init.timeout + 1;
           self.logTrace('Device[', device.id, '] connection failed.');
         }
@@ -490,77 +532,37 @@ MeltemCVSMaster.prototype.initDevices = function() {
         var ratio = self.statistics.init.done * 100.0 / self.devices.length;
         self.logTrace('initialization Ratio [', self.statistics.init.done, ',', self.statistics.init.timeout, ',', ratio.toFixed(2), '% ]');
 
-        if (deviceCount === 0) {
-          resolve('done');
+        finishedDeviceCount = finishedDeviceCount + 1;
+
+        if (finishedDeviceCount === devices.length) {
+          resolve(initializeFailedList);
         }
       });
     });
   });
 };
 
-MeltemCVSMaster.prototype.updateDevices = function(timeout) {
+MeltemCVSMaster.prototype.updateDevices = function(devices) {
   var self =this;
 
   return  new Promise(function(resolve) {
-    var updateCount = self.devices.length;
-    var stopUpdate = false;
-    var timeoutList=[];
-    var startTime = new Date().getTime();
+    var updateFailedList = [];
+    var count = devices.length;
 
-    var timeoutHandler = setTimeout(function() {
-      stopUpdate = true;
-    }, timeout);
-
-    self.logTrace('Set update timeout :', timeout);
-
-    _.each(self.devices, function(device) {
-      if (!self.stop) {
-        device.update().then(function(result){
-          if (result !== 'done') {
-            timeoutList.push(device);
-          }
-
-          updateCount = updateCount - 1;
-          if (updateCount === 0) {
-            clearTimeout(timeoutHandler);
-            var elapsedTime = new Date().getTime() - startTime;
-
-            if ((elapsedTime < timeout) && (timeoutList.length !== 0)) {
-              var retryDeviceCount = timeoutList.length;
-              var retryTimeoutHandler = setTimeout(function() {
-                stopUpdate = true;
-              }, timeout - elapsedTime);
-  
-              _.each(timeoutList, function(device) {
-                if (!self.stop) {
-                  device.update().then(function(result) {
-                    if (result !== 'done') {
-                      self.logTrace('Device[', device.id, '] update retry failed.');
-                    }
-
-                    retryDeviceCount = retryDeviceCount - 1;
-                    if (retryDeviceCount === 0) {
-                      clearTimeout(retryTimeoutHandler);
-                      self.logTrace('Update all devices!');
-                      self.showStatistics();
-                      resolve('done');
-                    }
-                  });
-                }
-              });
-            }
-            else {
-              self.logTrace('Update all devices!');
-              self.showStatistics();
-              resolve('done');
-            }
-          }
-          else if (stopUpdate){
-            self.logError('Update timeout!');
-            resolve('timeout');
-          }
-        });
+      if (!devices) {
+        devices = self.devices;
       }
+    _.each(devices, function(device) {
+      device.update().then(function(result) {
+        if (result !== 'done') {
+          updateFailedList.push(device);
+        }
+
+        count = count - 1;
+        if (count === 0) {
+          resolve(updateFailedList);
+        }
+      });
     });
   });
 };

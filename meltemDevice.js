@@ -462,6 +462,7 @@ function MeltemCVSDevice(master, id) {
       if (self.requestPool.current.timeoutCB) {
         self.requestPool.current.timeoutCB();
       }
+      self.timeoutRequest = self.requestPool.current;
       self.requestPool.current = undefined;
     }
     catch(e) {
@@ -737,12 +738,12 @@ MeltemCVSDevice.prototype.updateRequestStatistics = function(result) {
   }
 };
 
-MeltemCVSDevice.prototype.responseCB = function(data) {
+MeltemCVSDevice.prototype.responseCB = function(data, delayed) {
   var self = this;
   try{
     self.logTrace(data);
 
-    if ((!self.requestPool.current) || (data.length < 11)) {
+    if (data.length < 11) {
       throw new Error('Invalid Data');
     }
  
@@ -752,6 +753,9 @@ MeltemCVSDevice.prototype.responseCB = function(data) {
       throw new Error('Invalid command[' + cmd + ']');
     }
 
+    if (delayed) {
+      self.logTrace('Delayed response accepted');
+    }
     self.updateRequestStatistics(response(data, self.requestPool.current));
   }
   catch(e) {
