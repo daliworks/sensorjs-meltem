@@ -8,11 +8,19 @@ var meltem = require('../meltem');
 
 function MeltemCVSSensor(sensorInfo, options) {
   var self = this;
+  var deviceAddress;
 
   Sensor.call(self, sensorInfo, options);
 
   self.sequence = self.id.split('-')[2];
-  self.deviceAddress = self.id.split('-')[1];
+  deviceAddress = self.id.split('-')[1];
+  if (deviceAddress.split(':').length === 1) {
+    self.deviceAddress = deviceAddress;
+  }
+  else {
+    self.deviceAddress = deviceAddress.split(':')[1];
+    self.port = deviceAddress.split(':')[0];
+  }
   self.gatewayId = self.id.split('-')[0];
   self.lastData = { value: 0, time: 0};
   self.dataArray = [];
@@ -23,7 +31,7 @@ function MeltemCVSSensor(sensorInfo, options) {
 
   self.dataType = MeltemCVSSensor.properties.dataTypes[self.model][0];
   self.onChange =  MeltemCVSSensor.properties.onChange[self.model];
-  self.master = meltem.create(self.gatewayId);
+  self.master = meltem.create(self.gatewayId, self.port);
 
   try {
     self.device = self.master.addDevice(self.deviceAddress);

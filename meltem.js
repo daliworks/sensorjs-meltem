@@ -3,7 +3,6 @@
 var CONFIG = require('config');
 var util = require('util');
 var _ = require('lodash');
-var SerialPort = require('serialport');
 var net = require('net');
 var EventEmitter = require('events').EventEmitter;
 var Device = require('./meltemDevice');
@@ -15,13 +14,6 @@ var LOOP_INTERVAL_MIN = 10000;
 var REQUEST_TIMEOUT = 5000;
 var START_OF_FRAME = '(';
 var END_OF_FRAME = ')';
-
-var serialOpts = {
-  baudRate: 115200,
-  parity: 'none',
-  parser: new SerialPort.parsers.Readline('\r\n'),
-  autoOpen: false
-};
 
 //var SERIAL_PORT = '/dev/ttyS0';
 var masters = [];
@@ -52,11 +44,17 @@ function MeltemCVSMaster (id, port) {
       timeout: 0,
       done: 0
     },
+    traffic: {
+      inbound: 0,
+      fragment: 0
+    }
   };
-  self.log = {
+  self.logLevel = {
     info: true,
     trace: true,
     error: true,
+    fragment: false,
+    payload: true,
     callback: false
   };
   self.stop = true;
@@ -64,24 +62,19 @@ function MeltemCVSMaster (id, port) {
 
   self.loadConfig(CONFIG);
 
-  self.logTrace('Create new instance :', self.getMasterID());
+  self.log('trace', 'Create new instance :', self.getMasterID());
 
   EventEmitter.call(self);
 
-  self.logTrace('port :', port);
-  if (_.isNumber(port)) {
-    self.startNetServer(port);
-  }
-  else {
-    self.startSerialServer(port);
-  }
+  self.log('trace', 'port :', port);
+  self.startNetServer(port);
 
   // Called when net server is connected.
   self.on('connect', function() {
     var self = this;
 
     self.stop = false;
-    self.logInfo('Connected');
+    self.log('info', 'Connected');
     if (self.config.initializationFirst) {
       self.initDevices(self.devices).then(function(initializeFailedList) {
         self.initializeFailedList = initializeFailedList;
@@ -97,7 +90,7 @@ function MeltemCVSMaster (id, port) {
     var self = this;
 
     self.stop = true;
-    self.logInfo('Disconnected');
+    self.log('info', 'Disconnected');
     if (self.intervalHandler) {
       clearInterval(self.intervalHandler);
       self.intervalHandler = undefined;
@@ -107,7 +100,9 @@ function MeltemCVSMaster (id, port) {
   self.on('update', function() {
     var self = this;
 
-    self.logTrace('update interval :', self.getUpdateInterval(), 'ms');
+    self.log('error', '################################################');
+    self.log('trace', '# update interval :', self.getUpdateInterval(), 'ms #');
+    self.log('error', '################################################');
 
     var  startTime = new Date().getTime();
     var  timeout = self.getUpdateInterval(true);
@@ -117,41 +112,79 @@ function MeltemCVSMaster (id, port) {
       var remainTime = timeout - elapsedTime;
       var updateRetryList = [];
 
-      _.each(updateFailedList, function(device) {
-        if (device.getRequestTimeout() < remainTime ) {
-          updateRetryList.push(device);
-          remainTime = remainTime - device.getRequestTimeout();
-        }
-      });
+      self.log('error', '################################################');
+      self.log('trace', '# Remain Time :', remainTime, 'ms #');
+      self.log('error', '################################################');
 
-      self.logTrace('Retry Count :', updateRetryList.length);
+      if (remainTime > 0) {
+        _.each(updateFailedList, function(device, index) {
+          self.log('info', index, ':', device.id);
+        });
 
-      self.updateDevices(updateRetryList).then(function() {
-        var elapsedTime = new Date().getTime() - startTime;
-        var remainTime = timeout - elapsedTime;
-        var initializeRetryList = [];
-
-        _.each(self.initializeFailedList, function(device) {
-          if (device.getInitTimeout() < remainTime ) {
-            initializeRetryList.push(device);
+        _.each(updateFailedList, function(device) {
+          if (device.getRequestTimeout() < remainTime ) {
+            updateRetryList.push(device);
+            remainTime = remainTime - device.getRequestTimeout();
           }
         });
 
-        if (initializeRetryList.length) {
-          self.initDevices(initializeRetryList).then(function() {
-            self.emit('update');
+        self.log('trace', 'Retry Count :', updateRetryList.length);
+
+        if (updateRetryList.length) {
+          self.updateDevices(updateRetryList).then(function() {
+            var elapsedTime = new Date().getTime() - startTime;
+            var remainTime = timeout - elapsedTime;
+            var initializeRetryList = [];
+
+            self.log('trace', 'Update retry finished.[ Remain Time = ', remainTime, ']');
+
+            if (remainTime > 0) {
+              _.each(self.initializeFailedList, function(device) {
+                if (device.getInitTimeout() < remainTime ) {
+                  initializeRetryList.push(device);
+                }
+              });
+      
+              if (initializeRetryList.length) {
+                self.initDevices(initializeRetryList).then(function() {
+                  self.emit('update');
+                });
+              }
+              else {
+                self.emit('update');
+              }
+            }
+            else {
+              self.emit('update');
+            }
           });
         }
         else {
-          self.emit('update');
+          elapsedTime = new Date().getTime() - startTime;
+          if (elapsedTime > timeout) {
+            self.emit('update');
+          }
+          else {
+            setTimeout(function() {
+              self.emit('update');
+            }, timeout - elapsedTime);
+          }
         }
-      });
+      }
     });
   });
 
   self.on('data', function (payload) {
     var self = this;
     try {
+      if (self.logLevel.payload) {
+        self.log('trace', payload);
+      }
+
+      if (payload.length < 11) {
+        throw new Error('Invalid payload');
+      }
+
       var masterId = payload.substr(1, 3);
       var deviceId = payload.substr(4, 3);
       var cmd      = payload.substr(7, 3);
@@ -168,7 +201,7 @@ function MeltemCVSMaster (id, port) {
       var request = self.requestPool.current;
       if (request) {
         if (request.device !== device) {
-          self.logTrace('Device[', deviceId, '] has received a delayed response.');
+          self.log('trace', 'Device[', deviceId, '] has received a delayed response.');
           device.responseCB(payload, true);
         }
         else {
@@ -189,24 +222,37 @@ function MeltemCVSMaster (id, port) {
       }
     }
     catch(e) {
-      self.logError(e);
-      self.logError('Payload : ', payload);
+      self.log('error', e);
+      self.log('error', 'Payload :', payload);
     }
   });
 
+  var tmp = {
+    id : 0,
+    time: 0
+  };
   self.requestProcessHandler = setInterval(function() {
     if (!self.requestPool.current) {
       self.requestPool.current = self.requestPool.fastQueue.shift();
       if (!self.requestPool.current) {
         self.requestPool.current = self.requestPool.queue.shift();
-        if (self.requestPool.current){
-          self.logTrace('Get normal request');
-        }
       }
-      else {
-        self.logTrace('Get fast request');
+
+      if (self.requestPool.current) {
+        tmp.id = self.requestPool.current.id;
+        tmp.time = new Date().getTime();
+        self.log('trace', 'id :', tmp.id, ', time :', tmp.time);
       }
+      //self.log('info', 'FastQueue :', self.requestPool.fastQueue.length, 'NormalQueue :', self.requestPool.queue.length);
     } 
+    else
+    {
+        if ((new Date().getTime() - tmp.time) > 5000) {
+          self.log('trace', 'id :', tmp.id, ', time :', tmp.time);
+        }
+
+    }
+
     if (self.requestPool.current) {
       var request = self.requestPool.current;
  
@@ -216,7 +262,9 @@ function MeltemCVSMaster (id, port) {
           if (message.type === 'cmd') {
             var date = new Date();
             var payload = '<' + request.device.id + self.getMasterID() + message.payload + '>';
-            self.logTrace(payload);
+            if (self.logLevel.payload) {
+              self.log('trace', payload);
+            }
             message.requestTime = date.getTime();
 
             _.each(self.listeners, function(listener){
@@ -224,10 +272,13 @@ function MeltemCVSMaster (id, port) {
             });
 
             message.timeoutHandler = setTimeout(function() {
-              self.logError('Timeout :', request.device.id, ',', request.device.requestTimeout);
+              self.log('error', 'Timeout :', request.device.id, ',', request.device.requestTimeout);
               request.device.emit('timeout', request);
               if (self.requestPool.current === request) {
                 self.requestPool.current = undefined;
+              }
+              else {
+                self.log('error', 'The current request does not match.');
               }
             }, request.device.requestTimeout);
   
@@ -235,10 +286,13 @@ function MeltemCVSMaster (id, port) {
           }
           else if (message.type === 'wait') {
             message.timeoutHandler = setTimeout(function() {
-              self.logTrace('Wait :', request.device.id + ', ' + message.time);
+              self.log('trace', 'Wait :', request.device.id + ', ' + message.time);
               request.device.emit('waitDone', request);
               if (self.requestPool.current === request) {
                 self.requestPool.current = undefined;
+              }
+              else {
+                self.log('error', 'The current request does not match.');
               }
             }, message.time);
             request.current = message;
@@ -246,6 +300,9 @@ function MeltemCVSMaster (id, port) {
           else if (message.type === 'done') {
             request.device.emit('done', request);
             self.requestPool.current = undefined;
+          }
+          else {
+            self.log('error', 'Unknown message type', message.type);
           }
         }
         else {
@@ -259,22 +316,14 @@ function MeltemCVSMaster (id, port) {
 
 util.inherits(MeltemCVSMaster, EventEmitter);
 
-MeltemCVSMaster.prototype.logInfo= function(message) {
+MeltemCVSMaster.prototype.log = function(level) {
   var self = this;
 
-  if (self.log.info) {
-    logger.info('[' + self.constructor.name + ']', message);
-  }
-};
-
-MeltemCVSMaster.prototype.logError = function() {
-  var self = this;
-
-  if (self.log.error) {
+  if (self.logLevel[level] && logger[level]) {
     var i;
     var message = self.id + ' :';
 
-    for(i = 0 ; i < arguments.length ; i++) {
+    for(i = 1 ; i < arguments.length ; i++) {
       if (_.isObject(arguments[i])) {
         message = message + ' ' + arguments[i];
       }
@@ -283,27 +332,7 @@ MeltemCVSMaster.prototype.logError = function() {
       }
     }
 
-    logger.error(message);
-  }
-};
-
-MeltemCVSMaster.prototype.logTrace = function() {
-  var self =  this;
-
-  if (self.log.trace) {
-    var i;
-    var message = self.id + ' :';
-
-    for(i = 0 ; i < arguments.length ; i++) {
-      if (_.isObject(arguments[i])) {
-        message = message + ' ' + arguments[i];
-      }
-      else {
-        message = message + ' ' + arguments[i];
-      }
-    }
-
-    logger.trace(message);
+    logger[level](message);
   }
 };
 
@@ -335,7 +364,7 @@ MeltemCVSMaster.prototype.loadConfig = function(CONFIG) {
     self.config.loopInterval = self.config.loopIntervalMin;
   }
 
-  self.logTrace('Config :', self.config);
+  self.log('trace', 'Config :', self.config);
   try {
     self.config.port = [];
     if (CONFIG.meltem.master.port) {
@@ -357,43 +386,100 @@ MeltemCVSMaster.prototype.startNetServer = function(port) {
   var master = this;
 
   self.server = net.createServer(function (listener) {
-    self.logTrace('Client connected.');
+    //self.log('trace', 'Client connected.');
     master.listeners.push(listener);
 
     listener.parent = master;
-
-    listener.on('data', function (data) {
-      var self = this;
-      var payload = new Buffer(data).toString().trim();
-
-      if (payload.length < 11) {
-        self.parent.logError('Invalid Data : ', payload);
+    listener.buffer = [];
+    listener.statistics = {
+      traffic: {
+        invalid: 0,
+        fragment: 0,
+        inbound: 0
       }
-      else if ((payload.substr(0, 1) !== START_OF_FRAME) || (payload.substr(payload.length - 1, 1) !== END_OF_FRAME)) {
-        var startPosition = -1;
-        var endPosition = -1;
+    };
+    listener.on('data', function (data) {
+      self = this;
+      try {
 
-        while(true) {
-          startPosition = payload.indexOf(START_OF_FRAME, endPosition + 1);
-          if (startPosition === -1) {
-            break;
-          }
+        self.statistics.traffic.inbound  = self.statistics.traffic.inbound + 1;
 
-          endPosition = payload.indexOf(END_OF_FRAME, startPosition + 1);
-          if (endPosition === -1) {
-            break;
+        var payload = new Buffer(data).toString().trim();
+  
+        if (self.buffer.length === 0) {
+          if (payload.substr(0,1) !== START_OF_FRAME)  {
+            self.statistics.traffic.invalid = self.statistics.traffic.invalid + 1;
+            throw new Error('Invalid payload');
           }
+          else {
+            self.buffer = payload;
+            if (self.buffer[self.buffer.length - 1] !== END_OF_FRAME) {
+              self.statistics.traffic.fragment = self.statistics.traffic.fragment + 1;
+              if (self.parent.logLevel.fragment) {
+                self.parent.log('trace', 'Fragment data received! :', payload);
+              }
+            }
+          }
+        }
+        else {
+          if (payload.substr(0,1) === START_OF_FRAME)  {
+            self.buffer = payload;
+          }
+          else {
+            self.buffer = self.buffer + payload;
+          }
+  
+          if (self.buffer[self.buffer.length - 1] !== END_OF_FRAME) {
+            self.statistics.traffic.fragment = self.statistics.traffic.fragment + 1;
+            if (self.parent.logLevel.fragment) {
+              self.parent.log('trace', 'Fragment data received! :', payload);
+            }
+          }
+        }
+  
+        if (self.buffer.length > 100) {
+          self.buffer = [];
+          self.statistics.traffic.invalid = self.statistics.traffic.invalid + 1;
+          throw new Error('Invalid payload');
+        }
+  
+        if ((self.buffer.substr(0, 1) !== START_OF_FRAME) || (self.buffer.substr(self.buffer.length - 1, 1) !== END_OF_FRAME)) {
+          var startPosition = -1;
+          var endPosition = -1;
+  
+          while(true) {
+            startPosition = self.buffer.indexOf(START_OF_FRAME, endPosition + 1);
+            if (startPosition === -1) {
+              break;
+            }
+  
+            endPosition = self.buffer.indexOf(END_OF_FRAME, startPosition + 1);
+            if (endPosition === -1) {
+              break;
+            }
+  
+            var length = endPosition - startPosition + 1;
+            self.buffer = self.buffer.substr(startPosition, length);
+          }
+        }
 
-          var length = endPosition - startPosition + 1;
-          if (length < 11) {
-            break;
-          }
-          self.parent.emit('data', payload.substr(startPosition, length));
+        if ((self.buffer.length >= 11) && (self.buffer.substr(0, 1) === START_OF_FRAME) && (self.buffer.substr(self.buffer.length - 1, 1) === END_OF_FRAME)) {
+          self.parent.emit('data', self.buffer);
+          self.buffer = [];
+          self.parent.log('trace', 'In :', self.statistics.traffic.inbound, ', Frag :', self.statistics.traffic.fragment, ', Invalid :', self.statistics.traffic.invalid);
         }
       }
-      else {
-        self.parent.emit('data', payload);
+      catch(e) {
+        self.parent.log('error', e);
       }
+    });
+
+    listener.on('reset', function () {
+      var self = this;
+
+      clearInterval(listener.nextUpdateTimeout);
+
+      self.parent.log('info', '##### Reset received #####');
     });
 
     listener.on('end', function () {
@@ -404,7 +490,7 @@ MeltemCVSMaster.prototype.startNetServer = function(port) {
         return (element !== listener);
       });
 
-      self.parent.logTrace('FIN received');
+      self.parent.log('info', 'FIN received');
     });
 
     listener.on('close', function () {
@@ -414,62 +500,20 @@ MeltemCVSMaster.prototype.startNetServer = function(port) {
       self.parent.listeners = _.filter(self.parent.listeners, function(element) {
         return (element !== listener);
       });
-      self.parent.logTrace('Socket closed');
+      self.parent.log('info', 'Socket closed');
     });
 
     master.emit('connect');
   });
 
   master.server.listen(port, function () {
-    self.logTrace('Server listening for connection');
-  });
-};
-
-MeltemCVSMaster.prototype.openSerialServer = function(name) {
-  var self = this;
-
-  self.server = new SerialPort(name, serialOpts);
-  self.server.open(function(err) {
-    self.logTrace('Connected');
-
-    if (err) {
-      self.logError('Serial port error during opening :', err);
-      return;
-    } else {
-      self.logTrace('No err, Connected');
-    }
-
-    self.server.on('error', function onError(err) {
-      self.logError('Serial port error :', err);
-      return;
-    });
-
-    self.server.on('close', function onClose(err) {
-      if (err) {
-        self.logError('Serial port error during closing :',  err);
-        // TODO: if error, isn't this closed?
-      } else {
-        self.logTrace('Serial port is closed');
-      }
-
-      return;
-    });
-
-    self.server.on('disconnect', function onDisconnect(err) {
-      self.logError('Serial port is disconnected :', err);
-
-      return;
-    });
-
-    self.server.on('data', function onData(data) {
-      self.onData(data);
-    });
+    self.log('trace', 'Server listening for connection');
   });
 };
 
 MeltemCVSMaster.prototype.close = function () {
   var self = this;
-  self.logTrace('Closing port');
+  self.log('trace', 'Closing port');
 
   if (self.server) {
     self.server.close();
@@ -513,24 +557,25 @@ MeltemCVSMaster.prototype.initDevices = function(devices) {
   }
 
   var finishedDeviceCount = 0;
+  var initDoneCount = 0;
 
+  self.log('trace', 'Device initalization start!');
   return new Promise(function(resolve) {
     var initializeFailedList = [];
 
     _.each(devices, function(device) {
       device.init().then(function(response) { 
         if (response === 'done') {
-          self.statistics.init.done = self.statistics.init.done + 1;
-          self.logTrace('Device[', device.id, '] connection is completed.');
+          initDoneCount = initDoneCount + 1;
+          self.log('trace', 'Device[', device.id, '] connection is completed.');
         }
         else {
           initializeFailedList.push(device);
-          self.statistics.init.timeout = self.statistics.init.timeout + 1;
-          self.logTrace('Device[', device.id, '] connection failed.');
+          self.log('warn', 'Device[', device.id, '] connection failed.');
         }
 
-        var ratio = self.statistics.init.done * 100.0 / self.devices.length;
-        self.logTrace('initialization Ratio [', self.statistics.init.done, ',', self.statistics.init.timeout, ',', ratio.toFixed(2), '% ]');
+        var ratio = initDoneCount * 100.0 / self.devices.length;
+        self.log('trace', 'initialization Ratio [', initDoneCount, ',', initializeFailedList.length, ',', ratio.toFixed(2), '% ]');
 
         finishedDeviceCount = finishedDeviceCount + 1;
 
@@ -547,19 +592,21 @@ MeltemCVSMaster.prototype.updateDevices = function(devices) {
 
   return  new Promise(function(resolve) {
     var updateFailedList = [];
-    var count = devices.length;
 
       if (!devices) {
         devices = self.devices;
       }
+
+    var updateFinished = 0;
     _.each(devices, function(device) {
       device.update().then(function(result) {
+        updateFinished = updateFinished + 1;
+        self.log('trace', 'Update finished [', updateFinished, '/', devices.length);
         if (result !== 'done') {
           updateFailedList.push(device);
         }
 
-        count = count - 1;
-        if (count === 0) {
+        if (devices.length === updateFinished) {
           resolve(updateFailedList);
         }
       });
@@ -570,16 +617,16 @@ MeltemCVSMaster.prototype.updateDevices = function(devices) {
 MeltemCVSMaster.prototype.showStatistics = function() {
   var self = this;
 
-  self.logTrace('[STATICTICS]');
+  self.log('trace', '[STATICTICS]');
 
-  self.logTrace('Initialization');
-  self.logTrace('Done :', self.statistics.init.done);
+  self.log('trace', 'Initialization');
+  self.log('trace', 'Done :', self.statistics.init.done);
 
   _.each(self.devices, function(device) {
     var statistics = device.getStatistics();
 
     var failureRatio = statistics.update.failure * 100.0 / statistics.update.total;
-    self.logTrace(device.id, ',', statistics.update.total, ',', 
+    self.log('trace', device.id, ',', statistics.update.total, ',', 
       (statistics.update.total - statistics.update.failure), ',', 
       statistics.update.failure, ',', 
       failureRatio.toFixed(2), '%,',  
@@ -592,8 +639,10 @@ MeltemCVSMaster.prototype.showStatistics = function() {
 MeltemCVSMaster.prototype.fastRequest = function (device, request) {
   var self = this;
 
+  self.log('trace', 'Fast request called :', device.id);
   request.device = device;
   self.requestPool.fastQueue.push(request);
+  self.log('info', 'Add New Fast Requets FastQueue :', self.requestPool.fastQueue.length, 'NormalQueue :', self.requestPool.queue.length);
 };
 
 MeltemCVSMaster.prototype.sendRequest = function (device, request) {
@@ -601,6 +650,13 @@ MeltemCVSMaster.prototype.sendRequest = function (device, request) {
 
   request.device = device;
   self.requestPool.queue.push(request);
+  self.log('info', 'Add New Requets FastQueue :', self.requestPool.fastQueue.length, 'NormalQueue :', self.requestPool.queue.length);
+};
+
+MeltemCVSMaster.prototype.isCurrentRequest = function(request) {
+  var self = this;
+
+  return  (self.requestPool.current === request);
 };
 
 MeltemCVSMaster.prototype.doneMessage = function(requestId, messageId) {
@@ -665,13 +721,18 @@ MeltemCVSMaster.prototype.getRequestTimeout = function() {
   return  self.config.requestTimeout;
 };
 
-function CreateMaster(id) {
+function CreateMaster(id, port) {
+  if (!port) {
+    port = MELTEM_CVS_MASTER_PORT;
+  }
+
+  id = id + ':' + port;
   var master = _.find(masters, function(master) {
     return  master.id === id;
   });
 
   if (!master) {
-    master = new MeltemCVSMaster(id, MELTEM_CVS_MASTER_PORT);
+    master = new MeltemCVSMaster(id, port);
     masters.push(master);
   }
 
