@@ -1130,74 +1130,86 @@ MeltemCVSDevice.prototype.setSettings = function (settings) {
 
   self.log('trace', 'setSettings :', JSON.stringify(settings));
   return new Promise(function(resolve) {
-    if (self.isSettings1(settings) || self.isSettings2(settings) || self.isSettingsTest(settings)){
-      var messages = [];
-      var payload;
-
-      if (self.isSettings1(settings)){
-        self.log('trace', 'Set Settings 1');
-        payload = 'S60';
-        _.each(self.group[0].fields, function(name){
-          payload = payload + valueToString(self.settings[name], settings[name]);
-        });
- 
-        messages.push({
-          type: 'cmd',
-          name: 'S60',
-          payload: payload
-        });
-      }
+    try {
+      if (self.isSettings1(settings) || self.isSettings2(settings) || self.isSettingsTest(settings)){
+        var messages = [];
+        var payload;
   
-      if (self.isSettings2(settings)){
-        self.log('trace', 'Set Settings 2');
-        payload = 'S61';
-        _.each(self.group[1].fields, function(name){
-          payload = payload + valueToString(self.settings[name], settings[name]);
-        });
-  
-        messages.push({
-          type: 'cmd',
-          name: 'S61',
-          payload: payload
-        });
-      }
-      
-      if (self.isSettingsTest(settings)) {
-        self.log('trace', 'Set Settings Test');
-        payload = 'S70';
-        _.each(self.group[2].fields, function(name){
-          payload = payload + valueToString(self.settings[name], settings[name]);
-        });
-  
-        messages.push({
-          type: 'cmd',
-          name: 'S70',
-          payload: payload
-        });
-      }
-
-      if (messages.length) {
-        self.log('trace', 'Save Settings');
-        payload = 'P00';
-
-        messages.push({
-          type: 'cmd',
-          name: 'P00',
-          payload: payload
-        });
-      }
-
-      self.fastRequest(messages,
-        function () {
-          resolve('done');
-        },
-        function() {
-          resolve('timeout');
+        if (self.isSettings1(settings)){
+          self.log('trace', 'Set Settings 1');
+          payload = 'S60';
+          _.each(self.group[0].fields, function(name){
+            payload = payload + valueToString(self.settings[name], settings[name]);
+          });
+   
+          messages.push({
+            type: 'cmd',
+            name: 'S60',
+            payload: payload
+          });
         }
-      );
+    
+        if (self.isSettings2(settings)){
+          self.log('trace', 'Set Settings 2');
+          payload = 'S61';
+          _.each(self.group[1].fields, function(name){
+            payload = payload + valueToString(self.settings[name], settings[name]);
+          });
+    
+          messages.push({
+            type: 'cmd',
+            name: 'S61',
+            payload: payload
+          });
+        }
+        
+        if (self.isSettingsTest(settings)) {
+          self.log('trace', 'Set Settings Test');
+          payload = 'S70';
+          _.each(self.group[2].fields, function(name, index){
+            if (index < 6) {
+              if ((!_.isUndefined(settings[name]) && (settings[name] === 0)) ||
+                  (!_.isUndefined(self.settings[name]) && (settings[name] === 0))) {
+                  throw Error('Test value can not be set to 0.');
+              }
+            }
+            payload = payload + valueToString(self.settings[name], settings[name]);
+          });
+    
+          messages.push({
+            type: 'cmd',
+            name: 'S70',
+            payload: payload
+          });
+        }
+  
+        if (messages.length) {
+          self.log('trace', 'Save Settings');
+          payload = 'P00';
+  
+          messages.push({
+            type: 'cmd',
+            name: 'P00',
+            payload: payload
+          });
+        }
+  
+        self.fastRequest(messages,
+          function () {
+            resolve('done');
+          },
+          function() {
+            resolve('timeout');
+          }
+        );
+      }
+      else {
+        resolve('done');
+      }
     }
-    else {
-      resolve('done');
+    catch(e)
+    {
+      resolve('failed');
     }
   });
 };
