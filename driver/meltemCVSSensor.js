@@ -126,6 +126,8 @@ MeltemCVSSensor.prototype._get = function () {
       result.result[self.dataType] = self.lastData.value;
       result.time[self.dataType] = self.lastData.time;
     }
+
+    self.emit('data', result); 
   }
   else{
     if (self.dataArray.length){

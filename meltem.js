@@ -94,11 +94,17 @@ function MeltemCVSMaster (id, port) {
     self.stop = true;
     self.log('info', 'Disconnected');
 
-    self.log('trace', 'Listener count :', self.listeners.count);
+    self.log('trace', 'Listener count :', self.listeners.length);
     self.listeners = _.filter(self.listeners, function(element) {
-      return (element !== listener);
+      if (element !== listener) {
+        return  true;
+      } 
+      else {
+        self.log('trace', 'Listener found!');
+        return false;
+      }
     });
-    self.log('trace', 'Listener count :', self.listeners.count);
+    self.log('trace', 'Listener count :', self.listeners.length);
 
     if (self.intervalHandler) {
       clearInterval(self.intervalHandler);
@@ -209,10 +215,6 @@ function MeltemCVSMaster (id, port) {
     }
   });
 
-  var tmp = {
-    id : 0,
-    time: 0
-  };
   self.requestProcessHandler = setInterval(function() {
     if (!self.requestPool.current) {
       self.requestPool.current = self.requestPool.fastQueue.shift();
@@ -460,7 +462,7 @@ MeltemCVSMaster.prototype.startNetServer = function(port) {
       var self = this;
 
       self.parent.log('error', 'FIN received');
-      self.parent.emit('disconnect', self);
+      //self.parent.emit('disconnect', self);
     });
 
     listener.on('close', function () {
@@ -471,6 +473,24 @@ MeltemCVSMaster.prototype.startNetServer = function(port) {
 
     master.emit('connect');
   });
+
+  master.server.on('error', function(err) {
+    var self = this;
+
+    if (err.code === 'EADDRINUSE') {
+      master.log('trace', 'Address in use, retrying...');
+
+      setTimeout(function(){
+        self.listen(port, function () {
+          master.log('trace', 'Server listening for connection');
+        });
+      }, 1000);
+    }
+    else {
+      master.log('error', 'master.server error! :', err.code);
+    }
+  });
+
 
   master.server.listen(port, function () {
     self.log('trace', 'Server listening for connection');
