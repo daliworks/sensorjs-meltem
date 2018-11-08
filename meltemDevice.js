@@ -138,7 +138,7 @@ function MeltemCVSDevice(master, id) {
 
         if (data.length === 33) {
           if (data.substr(22, 1) === 'F'){
-            data = data.substr(0, 22) + 'F1' + data.substr(23, 10);
+            data = data.Substr(0, 22) + 'F1' + data.substr(23, 10);
           }
         }
         else if (data.length !== 34) {
@@ -636,6 +636,17 @@ function MeltemCVSDevice(master, id) {
         self.requestPool.current.successCB();
       }
       self.requestPool.current = undefined;
+    }
+    catch(e) {
+      self.log('error', e);
+    }
+  });
+
+  self.on('reset', function() {
+    try {
+      self.requestPool.fastQueue = [];
+      self.requestPool.queue = [];
+      self.requestPool.current = null;
     }
     catch(e) {
       self.log('error', e);

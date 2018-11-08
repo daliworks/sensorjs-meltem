@@ -55,7 +55,8 @@ function MeltemCVSMaster (id, port) {
     trace: true,
     error: true,
     fragment: false,
-    payload: true,
+    payload: false,
+    statistics: false,
     callback: false
   };
   self.stop = true;
@@ -71,11 +72,17 @@ function MeltemCVSMaster (id, port) {
   self.startNetServer(port);
 
   // Called when net server is connected.
-  self.on('connect', function() {
+  self.on('connect', function(listener) {
     var self = this;
+    self.log('info', 'Connected');
+
+    _.each(self.devices, function(device) {
+      device.emit('reset');
+    });
+
+    self.listeners.push(listener);
 
     self.stop = false;
-    self.log('info', 'Connected');
     if (!self.initializeDone && self.config.initializationFirst) {
       self.initDevices(self.devices).then(function(failedList) {
         self.initializeDone = true;
@@ -106,15 +113,13 @@ function MeltemCVSMaster (id, port) {
     });
     self.log('trace', 'Listener count :', self.listeners.length);
 
-    if (self.intervalHandler) {
-      clearInterval(self.intervalHandler);
-      self.intervalHandler = undefined;
-    }
-    self.initializeFailedList = [];
-    self.updateFailedList = [];
-    self.requestPool.fastQueue = [];
-    self.requestPool.queue = [];
-    self.requestPool.current = undefined;
+//    if (self.listeners.length === 0) {
+//      self.initializeFailedList = [];
+//      self.updateFailedList = [];
+//      self.requestPool.fastQueue = [];
+//      self.requestPool.queue = [];
+//      self.requestPool.current = undefined;
+//    }
   });
 
   self.on('update', function() {
@@ -365,8 +370,11 @@ MeltemCVSMaster.prototype.startNetServer = function(port) {
   var master = this;
 
   self.server = net.createServer(function (listener) {
-    //self.log('trace', 'Client connected.');
-    master.listeners.push(listener);
+    master.log('trace', '##########################################');
+    master.log('trace', 'Client connected.');
+    master.log('trace', 'Remote Address :', listener.remoteAddress + ':' + listener.remotePort);
+    master.log('trace', '##########################################');
+  
 
     listener.parent = master;
     listener.buffer = [];
@@ -377,8 +385,10 @@ MeltemCVSMaster.prototype.startNetServer = function(port) {
         inbound: 0
       }
     };
+
+    listener.setTimeout(300 * 1000);
     listener.on('data', function (data) {
-      self = this;
+      var self = this;
       try {
 
         self.statistics.traffic.inbound  = self.statistics.traffic.inbound + 1;
@@ -394,8 +404,8 @@ MeltemCVSMaster.prototype.startNetServer = function(port) {
             self.buffer = payload;
             if (self.buffer[self.buffer.length - 1] !== END_OF_FRAME) {
               self.statistics.traffic.fragment = self.statistics.traffic.fragment + 1;
-              if (self.parent.logLevel.fragment) {
-                self.parent.log('trace', 'Fragment data received! :', payload);
+              if (master.logLevel.fragment) {
+                master.log('trace', 'Fragment data received! :', payload);
               }
             }
           }
@@ -410,8 +420,8 @@ MeltemCVSMaster.prototype.startNetServer = function(port) {
   
           if (self.buffer[self.buffer.length - 1] !== END_OF_FRAME) {
             self.statistics.traffic.fragment = self.statistics.traffic.fragment + 1;
-            if (self.parent.logLevel.fragment) {
-              self.parent.log('trace', 'Fragment data received! :', payload);
+            if (master.logLevel.fragment) {
+              master.log('trace', 'Fragment data received! :', payload);
             }
           }
         }
@@ -443,35 +453,40 @@ MeltemCVSMaster.prototype.startNetServer = function(port) {
         }
 
         if ((self.buffer.length >= 11) && (self.buffer.substr(0, 1) === START_OF_FRAME) && (self.buffer.substr(self.buffer.length - 1, 1) === END_OF_FRAME)) {
-          self.parent.emit('data', self.buffer);
+          master.emit('data', self.buffer);
           self.buffer = [];
-          self.parent.log('trace', 'In :', self.statistics.traffic.inbound, ', Frag :', self.statistics.traffic.fragment, ', Invalid :', self.statistics.traffic.invalid);
+          if (master.logLevel.lstatistics){
+            master.log('trace', 'In :', self.statistics.traffic.inbound, ', Frag :', self.statistics.traffic.fragment, ', Invalid :', self.statistics.traffic.invalid);
+          }
         }
       }
       catch(e) {
-        self.parent.log('error', e);
+        master.log('error', e);
       }
     });
 
-    listener.on('reset', function () {
+    listener.on('timeout', function () {
       var self = this;
-      self.parent.log('info', '##### Reset received #####');
+      master.log('error', 'Socket timeout');
+      self.end();
+    });
+
+    listener.on('reset', function () {
+      master.log('info', '##### Reset received #####');
     });
 
     listener.on('end', function () {
-      var self = this;
-
-      self.parent.log('error', 'FIN received');
-      //self.parent.emit('disconnect', self);
+      master.log('error', 'FIN received');
     });
 
     listener.on('close', function () {
       var self = this;
-      self.parent.log('error', 'Socket closed');
-      self.parent.emit('disconnect', self);
+      master.log('error', 'Socket closed');
+      master.emit('disconnect', self);
+      self.end();
     });
 
-    master.emit('connect');
+    master.emit('connect', listener);
   });
 
   master.server.on('error', function(err) {
@@ -588,7 +603,7 @@ MeltemCVSMaster.prototype.updateDevices = function(devices) {
       _.each(devices, function(device) {
         device.update().then(function(result) {
           updateFinished = updateFinished + 1;
-          self.log('trace', 'Update finished [', updateFinished, '/', devices.length);
+          self.log('trace', 'Device[', device.id, '] update finished [', result, ']',  updateFinished, '/', devices.length, ']');
           if (result !== 'done') {
             updateFailedList.push(device);
           }

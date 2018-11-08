@@ -38,7 +38,7 @@ function MeltemCVSSensor(sensorInfo, options) {
 
     self.master.on(self.deviceAddress + '-' + self.sequence, function onData(data) {
 
-      logger.trace(self.id, ':', data);
+//      logger.trace(self.id, ':', data);
 
       if ((self.sequence !== 'pressure') || (data.value !== 0)) {
         self.lastData.value = data.value;
