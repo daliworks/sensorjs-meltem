@@ -76,9 +76,29 @@ function MeltemCVSMaster (id, port) {
     var self = this;
     self.log('info', 'Connected');
 
-    _.each(self.devices, function(device) {
+    if (self.listeners.length !== 0) {
+      _.each(self.listeners, function (listener) {
+        listener.parent = undefined;
+        listener.emit('close');
+      });
+
+      self.listeners = [];
+
+      if (self.updateTimeout) {
+        clearTimeout(self.updateTimeout);
+        self.updateTimeout = undefined;
+      }
+      self.initializeFailedList = [];
+      self.updateFailedList = [];
+      self.requestPool.fastQueue = [];
+      self.requestPool.queue = [];
+      self.requestPool.current = undefined;
+    }
+
+    _.each(self.devices, function (device) {
       device.emit('reset');
     });
+
 
     self.listeners.push(listener);
 
@@ -113,18 +133,23 @@ function MeltemCVSMaster (id, port) {
     });
     self.log('trace', 'Listener count :', self.listeners.length);
 
-//    if (self.listeners.length === 0) {
-//      self.initializeFailedList = [];
-//      self.updateFailedList = [];
-//      self.requestPool.fastQueue = [];
-//      self.requestPool.queue = [];
-//      self.requestPool.current = undefined;
-//    }
+    if (self.listeners.length === 0) {
+      if (self.updateTimeout) {
+        clearTimeout(self.updateTimeout);
+        self.updateTimeout = undefined;
+      }
+      self.initializeFailedList = [];
+      self.updateFailedList = [];
+      self.requestPool.fastQueue = [];
+      self.requestPool.queue = [];
+      self.requestPool.current = undefined;
+    }
   });
 
   self.on('update', function() {
     var self = this;
 
+    self.updateTimeout = undefined;
     self.log('error', '################################################');
     self.log('trace', '# update interval :', self.getUpdateInterval(), 'ms #');
     self.log('error', '################################################');
@@ -159,7 +184,7 @@ function MeltemCVSMaster (id, port) {
 
           self.log('trace', 'Update retry finished.[ Remain Time = ', remainTime, ']');
 
-          setTimeout(function() {
+          self.updateTimeout = setTimeout(function() {
             self.emit('update');
           }, remainTime);
         });
@@ -389,8 +414,11 @@ MeltemCVSMaster.prototype.startNetServer = function(port) {
     listener.setTimeout(300 * 1000);
     listener.on('data', function (data) {
       var self = this;
-      try {
+      if (_.isUndefined(self.parent)) {
+        return;
+      }
 
+      try {
         self.statistics.traffic.inbound  = self.statistics.traffic.inbound + 1;
 
         var payload = new Buffer(data).toString().trim();
@@ -453,7 +481,7 @@ MeltemCVSMaster.prototype.startNetServer = function(port) {
         }
 
         if ((self.buffer.length >= 11) && (self.buffer.substr(0, 1) === START_OF_FRAME) && (self.buffer.substr(self.buffer.length - 1, 1) === END_OF_FRAME)) {
-          master.emit('data', self.buffer);
+          master.emit('data', self.buffer, self);
           self.buffer = [];
           if (master.logLevel.lstatistics){
             master.log('trace', 'In :', self.statistics.traffic.inbound, ', Frag :', self.statistics.traffic.fragment, ', Invalid :', self.statistics.traffic.invalid);
@@ -467,8 +495,11 @@ MeltemCVSMaster.prototype.startNetServer = function(port) {
 
     listener.on('timeout', function () {
       var self = this;
+
       master.log('error', 'Socket timeout');
-      self.end();
+      if (!_.isUndefined(self.parent)) {
+        master.emit('disconnect', self); 
+      }
     });
 
     listener.on('reset', function () {
@@ -481,8 +512,12 @@ MeltemCVSMaster.prototype.startNetServer = function(port) {
 
     listener.on('close', function () {
       var self = this;
+
       master.log('error', 'Socket closed');
-      master.emit('disconnect', self);
+
+      if (!_.isUndefined(self.parent)) {
+        master.emit('disconnect', self);
+      }
       self.end();
     });
 
@@ -733,10 +768,7 @@ function CreateMaster(id, port) {
   }
 
   id = id + ':' + port;
-  var master = _.find(masters, function(master) {
-    return  master.id === id;
-  });
-
+  var master = _.find(masters, { id: id});
   if (!master) {
     master = new MeltemCVSMaster(id, port);
     masters.push(master);
@@ -752,9 +784,7 @@ function DestroyMaster(id) {
 }
 
 function  GetMaster(id) {
-  return  _.find(masters, function(master) {
-      return  (master.id === id);
-  });
+  return  _.find(masters, { id: id});
 }
 
 module.exports = {
