@@ -11,7 +11,7 @@ var logger = require('./index').Sensor.getLogger('Sensor');
 var MELTEM_CVS_MASTER_ID = '999';
 var MELTEM_CVS_MASTER_PORT = 9000;
 var LOOP_INTERVAL_MIN = 10000;
-var REQUEST_TIMEOUT = 5000;
+var REQUEST_TIMEOUT = 10000;
 var START_OF_FRAME = '(';
 var END_OF_FRAME = ')';
 
@@ -55,7 +55,7 @@ function MeltemCVSMaster (id, port) {
     trace: true,
     error: true,
     fragment: false,
-    payload: false,
+    payload: true,
     statistics: false,
     callback: false
   };
@@ -186,7 +186,7 @@ function MeltemCVSMaster (id, port) {
 
           self.updateTimeout = setTimeout(function() {
             self.emit('update');
-          }, remainTime);
+          }, 10000);//remainTime);
         });
       }
     });
@@ -195,6 +195,7 @@ function MeltemCVSMaster (id, port) {
   self.on('data', function (payload) {
     var self = this;
     try {
+      self.log('trace', 'Recieved Frame :', payload);
       if (self.logLevel.payload) {
         self.log('trace', payload);
       }
@@ -270,7 +271,10 @@ function MeltemCVSMaster (id, port) {
               message.requestTime = date.getTime();
   
               _.each(self.listeners, function(listener){
-                listener.write(payload + '\r\n');
+                self.log('trace', 'Send Frame :', payload);
+                setTimeout(function() {
+                  listener.write(payload);
+                }, 2500);
               });
   
               message.timeoutHandler = setTimeout(function() {
@@ -419,6 +423,7 @@ MeltemCVSMaster.prototype.startNetServer = function(port) {
       }
 
       try {
+        master.log('trace', 'Recieved Frame :', data);
         self.statistics.traffic.inbound  = self.statistics.traffic.inbound + 1;
 
         var payload = new Buffer(data).toString().trim();
@@ -486,6 +491,9 @@ MeltemCVSMaster.prototype.startNetServer = function(port) {
           if (master.logLevel.lstatistics){
             master.log('trace', 'In :', self.statistics.traffic.inbound, ', Frag :', self.statistics.traffic.fragment, ', Invalid :', self.statistics.traffic.invalid);
           }
+        }
+        else {
+          master.log('error', 'Invalid Frame :', self.buffer.length, self.buffer.substr(0, 1), self.buffer.substr(self.buffer.length - 1, 1));
         }
       }
       catch(e) {

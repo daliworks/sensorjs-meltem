@@ -82,7 +82,7 @@ function MeltemCVSDevice(master, id) {
 
   self.id = id;
   self.master = master;
-  self.requestTimeout = 5000;
+  self.requestTimeout = master.getRequestTimeout();
   self.connectionTimeout = 1800000;
   self.requestPool = {
     fastQueue: [],
@@ -560,7 +560,7 @@ function MeltemCVSDevice(master, id) {
             result.result = 'success';
             setTimeout(function() {
               cb && cb(undefined, JSON.stringify(result));
-            }, 5000);
+            }, self.requestTiemout);
           }
           else {
             result.result = 'failed';
@@ -1122,7 +1122,7 @@ MeltemCVSDevice.prototype.factoryReset = function () {
         payload: payload,
       }, {
         type: 'wait',
-        time: 5000
+        time: self.requestTimeout
       }],
       function () {
         self.log('trace', 'Reset successfully done');
